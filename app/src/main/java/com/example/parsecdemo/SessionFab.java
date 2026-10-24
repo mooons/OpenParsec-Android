@@ -121,6 +121,16 @@ public final class SessionFab {
         else apply.run();
     }
 
+    public void destroy() {
+        hideMenu();
+        root.removeView(fab);
+    }
+
+    public void reveal() {
+        setVisible(true);
+        if (!menuOpen) showMenu();
+    }
+
     public boolean isMenuOpen() { return menuOpen; }
 
     public void hideMenu() {
@@ -237,8 +247,11 @@ public final class SessionFab {
                 com.google.android.material.R.attr.colorSurfaceContainerHigh));
         menuBg.setCornerRadius(dp(20));
         menuContainer.setBackground(menuBg);
-        menuContainer.addView(list, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        android.widget.ScrollView scroll = new android.widget.ScrollView(activity);
+        scroll.addView(list);
+        menuContainer.addView(scroll, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, Math.min(dp(items.size() * 48),
+                Math.max(dp(96), root.getHeight() - dp(32)))));
         menu = menuContainer;
         root.addView(menu, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));

@@ -66,6 +66,8 @@ public final class ParsecApi {
         if (tfa != null && !tfa.isEmpty()) body.put("tfa", tfa);
 
         HttpURLConnection c = (HttpURLConnection) new URL(BASE + "/v1/auth").openConnection();
+        c.setConnectTimeout(10000);
+        c.setReadTimeout(15000);
         try {
             c.setRequestMethod("POST");
             c.setRequestProperty("Content-Type", "application/json");
@@ -95,6 +97,8 @@ public final class ParsecApi {
 
     public static SelfUser getSelfInfo(String sessionId) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(BASE + "/me").openConnection();
+        c.setConnectTimeout(10000);
+        c.setReadTimeout(15000);
         try {
             c.setRequestMethod("GET");
             c.setRequestProperty("Authorization", "Bearer " + sessionId);
@@ -113,6 +117,8 @@ public final class ParsecApi {
 
     public static List<Friend> listFriends(String sessionId) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(BASE + "/friendships").openConnection();
+        c.setConnectTimeout(10000);
+        c.setReadTimeout(15000);
         try {
             c.setRequestMethod("GET");
             c.setRequestProperty("Authorization", "Bearer " + sessionId);
@@ -150,6 +156,8 @@ public final class ParsecApi {
 
     public static List<Host> listHosts(String sessionId) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(BASE + "/v2/hosts?mode=desktop&public=false").openConnection();
+        c.setConnectTimeout(10000);
+        c.setReadTimeout(15000);
         try {
             c.setRequestMethod("GET");
             c.setRequestProperty("Content-Type", "application/json");

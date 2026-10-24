@@ -34,7 +34,28 @@ public class HostListActivity extends AppCompatActivity {
     public static final String EXTRA_PEER_ID = "peer_id";
     public static final String EXTRA_HOST_NAME = "host_name";
 
+    static final String EXTRA_AUTO_CONNECT = "auto_connect";
+    static final String EXTRA_FORCE_RECONNECT = "force_reconnect";
     private String sessionId;
+    private LinearLayout lastHostCard;
+    private boolean refreshing;
+    private boolean networkWasAvailable;
+    private android.net.ConnectivityManager connectivity;
+    private final android.net.ConnectivityManager.NetworkCallback networkCallback =
+            new android.net.ConnectivityManager.NetworkCallback() {
+        @Override public void onCapabilitiesChanged(android.net.Network network, android.net.NetworkCapabilities caps) {
+            runOnUiThread(() -> {
+                boolean online = caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+                if (online && !networkWasAvailable && !isFinishing() && !isDestroyed()) {
+                    loadHosts();
+                    friendsLoaded = false;
+                    if (currentTab == Tab.FRIENDS) loadFriendsIfNeeded();
+                }
+                networkWasAvailable = online;
+            });
+        }
+        @Override public void onLost(android.net.Network network) { runOnUiThread(() -> networkWasAvailable = false); }
+    };
     private LinearLayout hostsContainer;
     private TextView hostCount;
     private TextView refreshTime;
@@ -88,6 +109,70 @@ public class HostListActivity extends AppCompatActivity {
 
         setContentView(root);
         loadHosts();
+        handleLaunchReconnect();
+    }
+
+    @Override protected void onStart() {
+        super.onStart();
+        connectivity = getSystemService(android.net.ConnectivityManager.class);
+        networkWasAvailable = isOnline();
+        if (connectivity != null) connectivity.registerDefaultNetworkCallback(networkCallback);
+    }
+
+    @Override protected void onStop() {
+        if (connectivity != null) connectivity.unregisterNetworkCallback(networkCallback);
+        super.onStop();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        refreshLastHostCard();
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        sessionId = intent.getStringExtra(LoginActivity.EXTRA_SESSION_ID);
+        handleLaunchReconnect();
+    }
+
+    private void handleLaunchReconnect() {
+        boolean launch = getIntent().getBooleanExtra(EXTRA_AUTO_CONNECT, false);
+        boolean force = getIntent().getBooleanExtra(EXTRA_FORCE_RECONNECT, false);
+        getIntent().removeExtra(EXTRA_AUTO_CONNECT);
+        getIntent().removeExtra(EXTRA_FORCE_RECONNECT);
+        if (!settings.lastPeerId().isEmpty() && (force || launch && settings.autoConnectOnLaunch()
+                && settings.resumeLastHost())) reconnectLastHost();
+    }
+
+    private boolean isOnline() {
+        android.net.ConnectivityManager manager = getSystemService(android.net.ConnectivityManager.class);
+        android.net.NetworkCapabilities caps = manager == null ? null : manager.getNetworkCapabilities(manager.getActiveNetwork());
+        return caps != null && caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET);
+    }
+
+    private void reconnectLastHost() {
+        connectTo(new ParsecApi.Host(settings.lastPeerId(), settings.lastHostName(), "", true));
+    }
+
+    private void refreshLastHostCard() {
+        if (lastHostCard == null) return;
+        lastHostCard.removeAllViews();
+        lastHostCard.setVisibility(settings.lastPeerId().isEmpty() ? View.GONE : View.VISIBLE);
+        if (settings.lastPeerId().isEmpty()) return;
+        TextView title = new TextView(this);
+        title.setText("Last host: " + settings.lastHostName());
+        title.setTextColor(MaterialUi.color(this, com.google.android.material.R.attr.colorOnSurface));
+        title.setTextSize(16);
+        lastHostCard.addView(title);
+        MaterialButton reconnect = new MaterialButton(this);
+        reconnect.setText("Reconnect");
+        reconnect.setOnClickListener(v -> reconnectLastHost());
+        lastHostCard.addView(reconnect);
+        MaterialButton forget = new MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle);
+        forget.setText("Forget host");
+        forget.setOnClickListener(v -> { settings.clearLastHost(); refreshLastHostCard(); });
+        lastHostCard.addView(forget);
     }
 
     // ===== Top bar — MaterialToolbar with logo, host count, refresh, settings =====
@@ -180,6 +265,12 @@ public class HostListActivity extends AppCompatActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         rtLp.bottomMargin = dp(16);
         colL.addView(refreshTime, rtLp);
+
+        lastHostCard = new LinearLayout(this);
+        lastHostCard.setOrientation(LinearLayout.VERTICAL);
+        lastHostCard.setPadding(dp(16), dp(8), dp(16), dp(16));
+        colL.addView(lastHostCard);
+        refreshLastHostCard();
 
         hostsContainer = new LinearLayout(this);
         hostsContainer.setOrientation(LinearLayout.VERTICAL);
@@ -354,11 +445,11 @@ public class HostListActivity extends AppCompatActivity {
         BottomNavigationView nav = new BottomNavigationView(this);
         nav.setBackgroundColor(MaterialUi.color(this,
                 com.google.android.material.R.attr.colorSurfaceContainer));
-        nav.getMenu().add(0, 1, 0, "Hosts").setIcon(R.drawable.ic_monitor);
-        nav.getMenu().add(0, 2, 1, "Friends").setIcon(R.drawable.ic_people);
-        nav.setSelectedItemId(1);
+        nav.getMenu().add(0, R.id.nav_hosts, 0, "Hosts").setIcon(R.drawable.ic_monitor);
+        nav.getMenu().add(0, R.id.nav_friends, 1, "Friends").setIcon(R.drawable.ic_people);
+        nav.setSelectedItemId(R.id.nav_hosts);
         nav.setOnItemSelectedListener(item -> {
-            switchTab(item.getItemId() == 1 ? Tab.HOSTS : Tab.FRIENDS);
+            switchTab(item.getItemId() == R.id.nav_hosts ? Tab.HOSTS : Tab.FRIENDS);
             return true;
         });
         return nav;
@@ -379,8 +470,9 @@ public class HostListActivity extends AppCompatActivity {
 
     // ===== Hosts data =====
     private void loadHosts() {
+        if (refreshing || isFinishing() || isDestroyed()) return;
+        refreshing = true;
         showLoading("Refreshing hosts…");
-        hostsContainer.removeAllViews();
         new AsyncTask<Void, Void, List<ParsecApi.Host>>() {
             Exception error;
             @Override protected List<ParsecApi.Host> doInBackground(Void... v) {
@@ -388,6 +480,8 @@ public class HostListActivity extends AppCompatActivity {
                 catch (Exception e) { error = e; return null; }
             }
             @Override protected void onPostExecute(List<ParsecApi.Host> hosts) {
+                refreshing = false;
+                if (isFinishing() || isDestroyed()) return;
                 hideLoading();
                 if (error != null) {
                     hostCount.setText("0 hosts");
@@ -408,6 +502,15 @@ public class HostListActivity extends AppCompatActivity {
                             .setPositiveButton("OK", null).show();
                     return;
                 }
+                hostsContainer.removeAllViews();
+                for (ParsecApi.Host host : hosts) {
+                    if (host.peerId.equals(settings.lastPeerId())) {
+                        boolean resume = settings.resumeLastHost();
+                        settings.rememberHost(host.peerId, host.name);
+                        settings.resumeLastHost(resume);
+                    }
+                }
+                refreshLastHostCard();
                 int total = hosts.size();
                 String grammar = total == 1 ? "host" : "hosts";
                 hostCount.setText(total + " " + grammar);
@@ -504,6 +607,12 @@ public class HostListActivity extends AppCompatActivity {
     }
 
     private void connectTo(ParsecApi.Host h) {
+        if (h.peerId.isEmpty()) return;
+        if (!isOnline()) {
+            new MaterialAlertDialogBuilder(this).setMessage("No network connection")
+                    .setPositiveButton("OK", null).show();
+            return;
+        }
         Intent i = new Intent(this, ParsecActivity.class);
         i.putExtra(LoginActivity.EXTRA_SESSION_ID, sessionId);
         i.putExtra(EXTRA_PEER_ID, h.peerId);
@@ -536,8 +645,7 @@ public class HostListActivity extends AppCompatActivity {
         String m = e.getMessage();
         if (m == null) return false;
         String low = m.toLowerCase(Locale.US);
-        return low.contains("401") || low.contains("403")
-                || low.contains("unauthor") || low.contains("forbidden")
+        return low.contains("401") || low.contains("unauthor")
                 || low.contains("invalid session") || low.contains("expired");
     }
 

@@ -45,7 +45,33 @@ final class KeyMap {
         if (code >= KeyEvent.KEYCODE_1 && code <= KeyEvent.KEYCODE_9) {
             return KEY_1 + (code - KeyEvent.KEYCODE_1);
         }
+        if (code >= KeyEvent.KEYCODE_F1 && code <= KeyEvent.KEYCODE_F12)
+            return 58 + code - KeyEvent.KEYCODE_F1;
+        if (code >= KeyEvent.KEYCODE_NUMPAD_1 && code <= KeyEvent.KEYCODE_NUMPAD_9)
+            return 89 + code - KeyEvent.KEYCODE_NUMPAD_1;
         switch (code) {
+            case KeyEvent.KEYCODE_CTRL_LEFT: return 224;
+            case KeyEvent.KEYCODE_SHIFT_LEFT: return 225;
+            case KeyEvent.KEYCODE_ALT_LEFT: return 226;
+            case KeyEvent.KEYCODE_META_LEFT: return 227;
+            case KeyEvent.KEYCODE_CTRL_RIGHT: return 228;
+            case KeyEvent.KEYCODE_SHIFT_RIGHT: return 229;
+            case KeyEvent.KEYCODE_ALT_RIGHT: return 230;
+            case KeyEvent.KEYCODE_META_RIGHT: return 231;
+            case KeyEvent.KEYCODE_CAPS_LOCK: return 57;
+            case KeyEvent.KEYCODE_NUM_LOCK: return 83;
+            case KeyEvent.KEYCODE_SCROLL_LOCK: return 71;
+            case KeyEvent.KEYCODE_SYSRQ: return 70;
+            case KeyEvent.KEYCODE_BREAK: return 72;
+            case KeyEvent.KEYCODE_INSERT: return 73;
+            case KeyEvent.KEYCODE_NUMPAD_0: return 98;
+            case KeyEvent.KEYCODE_NUMPAD_DIVIDE: return 84;
+            case KeyEvent.KEYCODE_NUMPAD_MULTIPLY: return 85;
+            case KeyEvent.KEYCODE_NUMPAD_SUBTRACT: return 86;
+            case KeyEvent.KEYCODE_NUMPAD_ADD: return 87;
+            case KeyEvent.KEYCODE_NUMPAD_ENTER: return 88;
+            case KeyEvent.KEYCODE_NUMPAD_DOT: return 99;
+            case KeyEvent.KEYCODE_NUMPAD_EQUALS: return 103;
             case KeyEvent.KEYCODE_ENTER: return KEY_ENTER;
             case KeyEvent.KEYCODE_ESCAPE: return KEY_ESCAPE;
             case KeyEvent.KEYCODE_DEL: return KEY_BACKSPACE;
@@ -73,6 +99,11 @@ final class KeyMap {
             case KeyEvent.KEYCODE_PAGE_DOWN: return KEY_PAGEDOWN;
             default: return 0;
         }
+    }
+
+    static int fromAndroidKey(int code, boolean optionAsCommand) {
+        int key = fromAndroidKey(code);
+        return optionAsCommand && (key == 226 || key == 230) ? key + 1 : key;
     }
 
     /** Translate a typed character into a ParsecKeycode (returns 0 if unmappable).

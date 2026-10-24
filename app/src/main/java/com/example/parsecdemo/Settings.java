@@ -20,14 +20,16 @@ public final class Settings {
     public static final String RIGHTCLICK_MIDDLE = "middle";
     public static final String RIGHTCLICK_SECOND = "second";
 
-    public static final int[] RESOLUTIONS_W = { 0, 1280, 1920, 2560, 3840 };
-    public static final int[] RESOLUTIONS_H = { 0,  720, 1080, 1440, 2160 };
+    public static final int[] RESOLUTIONS_W = { 0, 1280, 1920, 2560, 3840, 0 };
+    public static final int[] RESOLUTIONS_H = { 0,  720, 1080, 1440, 2160, 0 };
     public static final String[] RESOLUTION_LABELS = {
-            "Match Client", "1280×720", "1920×1080", "2560×1440", "3840×2160" };
+            "Match Client", "1280×720", "1920×1080", "2560×1440", "3840×2160", "Host Default" };
 
     private final SharedPreferences sp;
+    private final Context context;
 
     public Settings(Context ctx) {
+        this.context = ctx.getApplicationContext();
         this.sp = ctx.getApplicationContext()
                 .getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
@@ -133,12 +135,70 @@ public final class Settings {
      *  Cleared on explicit logout or when the saved token stops working. */
     public String sessionId() { return sp.getString("sessionId", null); }
     public void sessionId(String v) { sp.edit().putString("sessionId", v).apply(); }
-    public void clearSession() { sp.edit().remove("sessionId").apply(); }
+    public void clearSession() { sp.edit().remove("sessionId").apply(); clearLastHost(); }
 
     /** Optional last-used email so the login form can prefill it. Password is
      *  NEVER persisted — only the session token is. */
     public String lastEmail() { return sp.getString("lastEmail", ""); }
     public void lastEmail(String v) { sp.edit().putString("lastEmail", v).apply(); }
+
+    public int bitrate() { return sp.getInt("bitrate", 0); }
+    public void bitrate(int v) { sp.edit().putInt("bitrate", v).apply(); }
+    public boolean constantFps() { return sp.getBoolean("constantFps", false); }
+    public void constantFps(boolean v) { sp.edit().putBoolean("constantFps", v).apply(); }
+    public boolean reverseScroll() { return sp.getBoolean("reverseScroll", false); }
+    public void reverseScroll(boolean v) { sp.edit().putBoolean("reverseScroll", v).apply(); }
+    public boolean zoomEnabled() { return sp.getBoolean("zoomEnabled", false); }
+    public void zoomEnabled(boolean v) { sp.edit().putBoolean("zoomEnabled", v).apply(); }
+    public boolean optionAsCommand() { return sp.getBoolean("optionAsCommand", false); }
+    public void optionAsCommand(boolean v) { sp.edit().putBoolean("optionAsCommand", v).apply(); }
+    public String menuSwipeEdge() { return sp.getString("menuSwipeEdge", "off"); }
+    public void menuSwipeEdge(String v) { sp.edit().putString("menuSwipeEdge", v).apply(); }
+    public boolean enablePip() { return sp.getBoolean("enablePip", false); }
+    public void enablePip(boolean v) { sp.edit().putBoolean("enablePip", v).apply(); }
+    public boolean startMuted() { return sp.getBoolean("startMuted", false); }
+    public void startMuted(boolean v) { sp.edit().putBoolean("startMuted", v).apply(); }
+    public boolean autoReconnect() { return sp.getBoolean("autoReconnect", true); }
+    public void autoReconnect(boolean v) { sp.edit().putBoolean("autoReconnect", v).apply(); }
+    public boolean errorPrompts() { return sp.getBoolean("errorPrompts", false); }
+    public void errorPrompts(boolean v) { sp.edit().putBoolean("errorPrompts", v).apply(); }
+    public boolean autoConnectOnLaunch() { return sp.getBoolean("autoConnectOnLaunch", false); }
+    public void autoConnectOnLaunch(boolean v) { sp.edit().putBoolean("autoConnectOnLaunch", v).apply(); }
+    public String lastPeerId() { return sp.getString("lastPeerId", ""); }
+    public String lastHostName() { return sp.getString("lastHostName", ""); }
+    public boolean resumeLastHost() { return sp.getBoolean("resumeLastHost", false); }
+    public void resumeLastHost(boolean v) { sp.edit().putBoolean("resumeLastHost", v).apply(); }
+    public void rememberHost(String peerId, String name) {
+        sp.edit().putString("lastPeerId", peerId).putString("lastHostName", name)
+                .putBoolean("resumeLastHost", true).apply();
+        updateReconnectShortcut();
+    }
+    public void clearLastHost() {
+        sp.edit().remove("lastPeerId").remove("lastHostName").remove("resumeLastHost").apply();
+        updateReconnectShortcut();
+    }
+
+    private void updateReconnectShortcut() {
+        android.content.pm.ShortcutManager manager = context.getSystemService(android.content.pm.ShortcutManager.class);
+        if (manager == null) return;
+        try {
+            if (lastPeerId().isEmpty()) {
+                manager.removeDynamicShortcuts(java.util.Collections.singletonList("reconnect"));
+            } else {
+                android.content.Intent intent = new android.content.Intent(context, MainActivity.class)
+                        .setAction(MainActivity.ACTION_RECONNECT);
+                String name = lastHostName().isEmpty() ? lastPeerId() : lastHostName();
+                android.content.pm.ShortcutInfo shortcut = new android.content.pm.ShortcutInfo.Builder(context, "reconnect")
+                        .setShortLabel("Reconnect")
+                        .setLongLabel("Reconnect to " + name)
+                        .setIcon(android.graphics.drawable.Icon.createWithResource(context, R.drawable.ic_refresh))
+                        .setIntent(intent).build();
+                manager.setDynamicShortcuts(java.util.Collections.singletonList(shortcut));
+            }
+        } catch (RuntimeException e) {
+            android.util.Log.w("ParsecShortcut", "Launcher shortcut unavailable", e);
+        }
+    }
 
     public boolean isTouchpadMode() { return CURSOR_TOUCHPAD.equals(cursorMode()); }
 

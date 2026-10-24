@@ -101,6 +101,12 @@ public final class SettingsPanel {
         interact.addView(rowSlider(a, "Mouse Sensitivity", s.mouseSensitivity(), 0.1f, 4f, 0.1f, s::mouseSensitivity));
         addDivider(a, interact);
         interact.addView(rowSlider(a, "Scroll Sensitivity", s.scrollSensitivity(), 1f, 10f, 1f, s::scrollSensitivity));
+        addDivider(a, interact);
+        interact.addView(rowToggle(a, "Reverse Scrolling", s.reverseScroll(), s::reverseScroll));
+        addDivider(a, interact);
+        interact.addView(rowToggle(a, "Pinch to Zoom", s.zoomEnabled(), s::zoomEnabled));
+        addDivider(a, interact);
+        interact.addView(rowToggle(a, "Option Key as Command", s.optionAsCommand(), s::optionAsCommand));
         list.addView(interact);
 
         // Graphics
@@ -108,19 +114,24 @@ public final class SettingsPanel {
         LinearLayout graphics = catCard(a);
         graphics.addView(rowPickerInt(a, "Host Resolution",
                 Settings.RESOLUTION_LABELS,
-                new int[]{0, 1, 2, 3, 4},
+                new int[]{0, 1, 2, 3, 4, 5},
                 s.resolutionIndex(), s::resolutionIndex));
         addDivider(a, graphics);
-        graphics.addView(rowPickerInt(a, "Host Refresh Rate",
-                new String[]{"Auto", "120 Hz", "60 Hz", "30 Hz"},
+        graphics.addView(rowPickerInt(a, "Frame Rate",
+                new String[]{"Auto", "120 FPS", "60 FPS", "30 FPS"},
                 new int[]{0, 120, 60, 30},
                 s.preferredFps(), s::preferredFps));
         addDivider(a, graphics);
-        // Honest note: resolution/refresh only apply when you're the owner of
-        // the host PC connecting first (i.e. streaming your own machine).
-        graphics.addView(rowNote(a,
-                "Resolution & refresh only apply when streaming your own PC "
-                + "(you're the host owner). Ignored for shared/guest sessions."));
+        String[] bitrateLabels = new String[HostVideoConfig.BITRATES.length];
+        for (int i = 0; i < bitrateLabels.length; i++) bitrateLabels[i] = i == 0
+                ? "Host Default" : HostVideoConfig.BITRATES[i] + " Mbps";
+        graphics.addView(rowPickerInt(a, "Bitrate", bitrateLabels,
+                HostVideoConfig.BITRATES, s.bitrate(), s::bitrate));
+        addDivider(a, graphics);
+        graphics.addView(rowToggle(a, "Constant Frame Rate", s.constantFps(), s::constantFps));
+        addDivider(a, graphics);
+        graphics.addView(rowNote(a, "Video controls request changes from the host. "
+                + "Shared hosts may restrict them. Software decoder changes apply on reconnect."));
         addDivider(a, graphics);
         graphics.addView(rowToggle(a, "Force Software Decoder",
                 s.decoderCompatibility(), s::decoderCompatibility));
@@ -155,6 +166,19 @@ public final class SettingsPanel {
         misc.addView(rowToggle(a, "Hide Status Bar", s.hideStatusBar(), s::hideStatusBar));
         addDivider(a, misc);
         misc.addView(rowToggle(a, "Show Keyboard Button", s.showKeyboardButton(), s::showKeyboardButton));
+        addDivider(a, misc);
+        misc.addView(rowPicker(a, "Menu Edge Swipe", new String[]{"Off", "Left", "Right"},
+                new String[]{"off", "left", "right"}, s.menuSwipeEdge(), s::menuSwipeEdge));
+        addDivider(a, misc);
+        misc.addView(rowToggle(a, "Picture in Picture", s.enablePip(), s::enablePip));
+        addDivider(a, misc);
+        misc.addView(rowToggle(a, "Start Muted", s.startMuted(), s::startMuted));
+        addDivider(a, misc);
+        misc.addView(rowToggle(a, "Auto Reconnect", s.autoReconnect(), s::autoReconnect));
+        addDivider(a, misc);
+        misc.addView(rowToggle(a, "Show Reconnect Errors", s.errorPrompts(), s::errorPrompts));
+        addDivider(a, misc);
+        misc.addView(rowToggle(a, "Reconnect on Launch", s.autoConnectOnLaunch(), s::autoConnectOnLaunch));
         list.addView(misc);
 
         // About — version + manual update check

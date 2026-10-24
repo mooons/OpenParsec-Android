@@ -32,6 +32,8 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|density|uiMode" />
         <activity android:name=".ParsecActivity"
+            android:supportsPictureInPicture="true"
+            android:resizeableActivity="true"
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|density|uiMode" />
     </application>

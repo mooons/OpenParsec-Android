@@ -8,6 +8,9 @@ import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.drawable.BitmapDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.Editable;
@@ -75,6 +78,8 @@ public class ParsecActivity extends Activity {
      *  down (so users can rescue them if they drift offscreen). */
     private int gestureMaxPointerCount = 0;
     private long gestureStartMs = 0L;
+    private float edgeSwipeDownX, edgeSwipeDownY;
+    private boolean edgeSwipeTracking;
     private static final long FOUR_FINGER_TAP_WINDOW_MS = 500L;
 
     /** Connection credentials, cached so the user can reconnect from the FAB
@@ -102,6 +107,10 @@ public class ParsecActivity extends Activity {
     /** Tracks the last relative-mode value pushed to the surface so we only
      *  toggle the cursor view / mode on an actual change. */
     private boolean lastRelativeMode = false;
+    private HostVideoConfig hostVideoConfig;
+    private HostVideoConfig hostVideoDisplays;
+    private String currentDisplay = "none";
+    private int hostStatus = SessionStatus.NOT_RUNNING;
 
     // ----- Auto-reconnect watchdog -----
     /** Looper handler that runs the health check on the main thread. */
@@ -216,6 +225,7 @@ public class ParsecActivity extends Activity {
             root.addView(surface, 0, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             surface.renderInit();
+            if (settings.startMuted()) parsec.clientSetMuted(true);
             buildMouseButtonRow();
             buildKeyboardCapture();
             buildKeyboardButton();
@@ -233,6 +243,7 @@ public class ParsecActivity extends Activity {
             }
             startHealthWatchdog();
             startIoPump();
+            requestHostConfig();
         } else {
             statusView.setText("clientConnect failed (code " + e + ")");
             Toast.makeText(this, "Connect failed: " + e, Toast.LENGTH_LONG).show();
@@ -269,6 +280,9 @@ public class ParsecActivity extends Activity {
                     surface.setZoomEnabled(!surface.isZoomEnabled());
                     rebuildSessionFab();
                 }));
+        if (hostVideoDisplays != null && hostVideoDisplays.displayCount() > 1)
+            items.add(new SessionFab.Item("Switch display", this::showDisplayPicker));
+
         // Push the phone's clipboard to the host (best-effort: depends on the
         // host honoring the user-data clipboard id).
         items.add(new SessionFab.Item("Paste to host", this::sendClipboardToHost));
@@ -335,7 +349,8 @@ public class ParsecActivity extends Activity {
     }
 
     private void rebuildSessionFab() {
-        if (fab != null) fab.setVisible(false);
+        if (fab != null) fab.destroy();
+        fab = null;
         buildSessionFab();
     }
 
@@ -396,7 +411,7 @@ public class ParsecActivity extends Activity {
         });
 
         keyboardCapture.setOnKeyListener((v, keyCode, event) -> {
-            int pk = KeyMap.fromAndroidKey(keyCode);
+            int pk = KeyMap.fromAndroidKey(keyCode, settings.optionAsCommand());
             if (pk == 0) return false;
             if (event.getAction() == KeyEvent.ACTION_DOWN) {
                 sendKey(pk, true);
@@ -470,13 +485,23 @@ public class ParsecActivity extends Activity {
             scheduleNextHealthCheck();
             return;
         }
+        int status;
         boolean failure;
         try {
-            failure = parsec.clientHasNetworkFailure();
+            status = parsec.clientGetStatus();
+            hostStatus = status;
+            failure = parsec.clientHasNetworkFailure() || (status != SessionStatus.OK && status != SessionStatus.APPROVAL);
         } catch (Throwable t) {
+            status = SessionStatus.NOT_RUNNING;
             failure = true;
         }
         if (failure) {
+            if (SessionStatus.permanent(status)) {
+                statusView.setText(SessionStatus.readable(status));
+                statusView.setVisibility(View.VISIBLE);
+                stopHealthWatchdog();
+                return;
+            }
             consecutiveFailureTicks++;
             if (consecutiveFailureTicks >= FAILURE_TICKS_TO_RECONNECT) {
                 Log.d("ParsecHealth", "auto-reconnect triggered after "
@@ -545,16 +570,53 @@ public class ParsecActivity extends Activity {
         if (isFinishing() || isDestroyed() || parsec == null) return;
         ioTickCount++;
 
-        // --- Relative (pointer-lock) cursor mode ---
-        boolean rel;
-        try { rel = parsec.clientGetCursorRelative(); }
-        catch (Throwable t) { rel = false; }
-        if (rel != lastRelativeMode) {
-            lastRelativeMode = rel;
-            if (surface != null) surface.setRelativeMouseMode(rel);
-            // In pointer-lock the host draws its own cursor; hide ours.
-            if (rel && cursorView != null) cursorView.setVisibility(View.GONE);
-        }
+        // --- Cursor mode and host cursor image ---
+        try {
+            boolean rel = parsec.clientGetCursorRelative();
+            int[] cursor = parsec.clientPollCursor();
+            if (cursor != null && cursor.length >= 9) {
+                if (surface != null && cursor[1] != 0)
+                    surface.restoreCursor(cursor[3], cursor[4]);
+                if (cursor[2] != 0 && cursor.length > 9) {
+                    int w = cursor[5], h = cursor[6];
+                    Bitmap bitmap = Bitmap.createBitmap(cursor, 9, w, w, h, Bitmap.Config.ARGB_8888);
+                    if (cursorView != null) {
+                        cursorView.setBackground(new BitmapDrawable(getResources(), bitmap));
+                        ViewGroup.LayoutParams lp = cursorView.getLayoutParams();
+                        lp.width = Math.max(1, Math.round(w * settings.cursorScale()));
+                        lp.height = Math.max(1, Math.round(h * settings.cursorScale()));
+                        cursorView.setLayoutParams(lp);
+                    }
+                }
+                if (cursorView != null && cursor[1] != 0) {
+                    cursorView.setTranslationX(cursor[3] - cursor[7]);
+                    cursorView.setTranslationY(cursor[4] - cursor[8]);
+                }
+            }
+            if (rel != lastRelativeMode) {
+                lastRelativeMode = rel;
+                if (surface != null) surface.setRelativeMouseMode(rel);
+                if (rel && cursorView != null) cursorView.setVisibility(View.GONE);
+            }
+        } catch (Throwable ignored) {}
+
+        // --- Host video/display user-data ---
+        try {
+            byte[] video = parsec.clientPollUserData(HostVideoConfig.SET_VIDEO);
+            if (video != null) {
+                HostVideoConfig cfg = new HostVideoConfig();
+                if (cfg.receive(HostVideoConfig.SET_VIDEO, new String(video, java.nio.charset.StandardCharsets.UTF_8)))
+                    hostVideoConfig = cfg;
+            }
+            byte[] display = parsec.clientPollUserData(HostVideoConfig.DISPLAYS);
+            if (display != null) {
+                HostVideoConfig cfg = new HostVideoConfig();
+                if (cfg.receive(HostVideoConfig.DISPLAYS, new String(display, java.nio.charset.StandardCharsets.UTF_8))) {
+                    hostVideoDisplays = cfg;
+                    if (fab != null) rebuildSessionFab();
+                }
+            }
+        } catch (Throwable ignored) {}
 
         // --- Controller rumble (host -> client) ---
         try {
@@ -563,15 +625,6 @@ public class ParsecActivity extends Activity {
                 int big = (r >> 8) & 0xFF;
                 int small = r & 0xFF;
                 triggerRumble(big, small);
-            }
-        } catch (Throwable ignored) {}
-
-        // --- Host clipboard -> Android clipboard (experimental) ---
-        try {
-            String clip = parsec.clientPollClipboard();
-            if (clip != null && !clip.isEmpty() && clipboard != null) {
-                clipboard.setPrimaryClip(
-                        android.content.ClipData.newPlainText("Parsec", clip));
             }
         } catch (Throwable ignored) {}
 
@@ -648,6 +701,9 @@ public class ParsecActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append(String.format(java.util.Locale.US,
                 "%d fps  ping %.0fms\ndec %.1fms  enc %.1fms", currentFps, net, dec, enc));
+        if (hostVideoConfig != null && hostVideoConfig.available())
+            sb.append(String.format(java.util.Locale.US, "\nbitrate %d Mbps  %s", hostVideoConfig.bitrate(),
+                    hostVideoConfig.constantFps() ? "constant FPS" : "adaptive FPS"));
         if (fellBack) sb.append("  [SW decode]");
         // Inline warnings — colorize red when degraded.
         boolean warn = net > 80f || dec > 30f || fellBack;
@@ -895,6 +951,30 @@ public class ParsecActivity extends Activity {
     /** Send the phone's current clipboard text to the host as Parsec user-data.
      *  Best-effort: whether the host pastes it depends on the host honoring
      *  the reserved clipboard message id. */
+    private void showDisplayPicker() {
+        if (hostVideoDisplays == null || hostVideoConfig == null) return;
+        try {
+            String[] labels = hostVideoDisplays.displayLabels();
+            new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                    .setTitle("Switch display")
+                    .setSingleChoiceItems(labels, currentDisplay.equals("none") ? 0 : -1,
+                            (dialog, which) -> {
+                                try {
+                                    currentDisplay = hostVideoDisplays.displayId(which);
+                                    String json = hostVideoConfig.update(settings.configResolutionX(),
+                                            settings.configResolutionY(), settings.bitrate(),
+                                            settings.preferredFps(), settings.constantFps(), currentDisplay);
+                                    if (parsec.clientSendUserData(HostVideoConfig.SET_VIDEO, json) == parsec.PARSEC_OK)
+                                        dialog.dismiss();
+                                } catch (Exception e) {
+                                    Toast.makeText(this, "Display switch unavailable", Toast.LENGTH_SHORT).show();
+                                }
+                            }).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "Display list unavailable", Toast.LENGTH_SHORT).show();
+        }
+    }
+
     private void sendClipboardToHost() {
         if (parsec == null || clipboard == null) return;
         CharSequence text = null;
@@ -1221,11 +1301,40 @@ public class ParsecActivity extends Activity {
                 settings.configRefreshRate());
     }
 
+    private void requestHostConfig() {
+        if (parsec == null) return;
+        try {
+            parsec.clientSendUserData(HostVideoConfig.GET_VIDEO, "");
+            parsec.clientSendUserData(HostVideoConfig.GET_DISPLAYS, "");
+        } catch (Throwable ignored) {}
+    }
+
+    private void applyHostConfigToHud() {
+        if (statsView != null && hostVideoConfig != null) updateStatsHud();
+    }
+
+    private boolean sendHostVideoConfig() {
+        if (parsec == null || hostVideoConfig == null || !hostVideoConfig.available()) return false;
+        try {
+            String json = hostVideoConfig.update(settings.configResolutionX(), settings.configResolutionY(),
+                    settings.bitrate(), settings.preferredFps(), settings.constantFps(),
+                    hostVideoConfig.output());
+            return parsec.clientSendUserData(HostVideoConfig.SET_VIDEO, json) == parsec.PARSEC_OK;
+        } catch (Exception e) {
+            Toast.makeText(this, "Host video settings unavailable", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+    }
+
     private void applySettingsToSurface() {
         if (surface == null) return;
         surface.setTrackpadMode(settings.isTouchpadMode());
         surface.setSensitivity(settings.mouseSensitivity());
         surface.setScrollSensitivity(settings.scrollSensitivity());
+        surface.setReverseScroll(settings.reverseScroll());
+        surface.setRightClickPosition(settings.rightClickPosition());
+        surface.setPreferredFps(settings.preferredFps());
+        surface.setZoomEnabled(settings.zoomEnabled());
         surface.setHostDimensions(settings.hostWidth(), settings.hostHeight());
         if (cursorView != null) {
             int sz = cursorSizePx();
@@ -1255,6 +1364,7 @@ public class ParsecActivity extends Activity {
             root.removeView(settingsOverlay);
             settingsOverlay = null;
             applySettingsToSurface();
+            sendHostVideoConfig();
             syncStatsHud(); // user may have toggled Show Performance Stats
         }
     }
@@ -1301,6 +1411,10 @@ public class ParsecActivity extends Activity {
             case MotionEvent.ACTION_DOWN:
                 gestureMaxPointerCount = 1;
                 gestureStartMs = System.currentTimeMillis();
+                edgeSwipeDownX = ev.getX();
+                edgeSwipeDownY = ev.getY();
+                edgeSwipeTracking = ("left".equals(settings.menuSwipeEdge()) && edgeSwipeDownX < dp(24))
+                        || ("right".equals(settings.menuSwipeEdge()) && edgeSwipeDownX > root.getWidth() - dp(24));
                 break;
             case MotionEvent.ACTION_POINTER_DOWN: {
                 int pc = ev.getPointerCount();
@@ -1314,7 +1428,13 @@ public class ParsecActivity extends Activity {
                 break;
             }
             case MotionEvent.ACTION_UP:
+                if (edgeSwipeTracking && Math.abs(ev.getX() - edgeSwipeDownX) > dp(72)
+                        && Math.abs(ev.getY() - edgeSwipeDownY) < dp(64) && fab != null) fab.reveal();
+                edgeSwipeTracking = false;
+                gestureMaxPointerCount = 0;
+                break;
             case MotionEvent.ACTION_CANCEL:
+                edgeSwipeTracking = false;
                 gestureMaxPointerCount = 0;
                 break;
         }
@@ -1418,8 +1538,18 @@ public class ParsecActivity extends Activity {
     }
 
     @Override
+    public void onUserLeaveHint() {
+        if (android.os.Build.VERSION.SDK_INT >= 26 && settings.enablePip() && parsec != null) {
+            try { enterPictureInPictureMode(new android.app.PictureInPictureParams.Builder().build()); }
+            catch (RuntimeException ignored) {}
+        }
+        super.onUserLeaveHint();
+    }
+
+    @Override
     protected void onPause() {
         if (surface != null) surface.onPause();
+        if (parsec != null) parsec.clientSetMuted(true);
         // Release any held physical-gamepad inputs so the host doesn't see a
         // stuck button while we're backgrounded.
         GamepadInputHandler.unplug(parsec);
@@ -1434,6 +1564,7 @@ public class ParsecActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (surface != null) surface.onResume();
+        if (parsec != null) parsec.clientSetMuted(settings.startMuted());
         applyImmersive();
         // Resume the watchdog. If we came back from background and the session
         // died, the first health tick (5s after resume) will catch it and

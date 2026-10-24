@@ -3,6 +3,9 @@ package com.example.parsecdemo;
 import android.content.Context;
 import android.opengl.GLSurfaceView;
 import android.view.InputDevice;
+import android.view.Choreographer;
+import android.view.VelocityTracker;
+import android.widget.OverScroller;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 
@@ -54,6 +57,20 @@ public class ClientGLSurface extends GLSurfaceView {
     /** User-configurable scroll sensitivity multiplier (Settings → Interactivity).
      *  1.0 = default, < 1.0 = slower, > 1.0 = faster. */
     private volatile float scrollSensitivity = 1.0f;
+    private boolean reverseScroll;
+    private String rightClickPosition = Settings.RIGHTCLICK_FIRST;
+    private float firstFingerX, firstFingerY, secondFingerX, secondFingerY;
+    private float mouseScrollX, mouseScrollY;
+    private int preferredFps = 60;
+    private long nextFrameNanos;
+    private boolean rendering;
+    private volatile boolean renderPaused;
+    private final Choreographer.FrameCallback frameTick = this::renderTick;
+    private VelocityTracker velocity;
+    private final OverScroller cursorScroller;
+    private boolean multipleFingers;
+    private int zoomGesture;
+    private float pinchSpan;
     private float cursorX = 0f;
     private float cursorY = 0f;
     private float lastX = 0f;
@@ -134,6 +151,7 @@ public class ClientGLSurface extends GLSurfaceView {
 
     public ClientGLSurface(Context context) {
         super(context);
+        cursorScroller = new OverScroller(context);
         scaleDetector = new ScaleGestureDetector(context,
                 new ScaleGestureDetector.SimpleOnScaleGestureListener() {
                     @Override public boolean onScaleBegin(ScaleGestureDetector d) {
@@ -175,6 +193,7 @@ public class ClientGLSurface extends GLSurfaceView {
         setScaleY(zoom);
         setTranslationX(panX);
         setTranslationY(panY);
+        notifyCursor(trackpadMode && !relativeMouseMode);
     }
 
     /** Clamp pan so the scaled surface can't be dragged completely off the
@@ -260,8 +279,56 @@ public class ClientGLSurface extends GLSurfaceView {
         this.scrollSensitivity = Math.max(0.1f, v);
     }
 
+    public void setReverseScroll(boolean reverse) { reverseScroll = reverse; }
+    public void setRightClickPosition(String position) { rightClickPosition = position; }
+    public void setPreferredFps(int fps) { preferredFps = fps; nextFrameNanos = 0; }
+
+    private void renderTick(long time) {
+        if (!rendering) return;
+        float displayRate = getDisplay() == null ? 60 : getDisplay().getRefreshRate();
+        int fps = preferredFps > 0 ? preferredFps : Math.round(displayRate);
+        long interval = 1_000_000_000L / Math.max(1, fps);
+        if (time >= nextFrameNanos) {
+            requestRender();
+            nextFrameNanos = nextFrameNanos == 0 || time - nextFrameNanos > interval
+                    ? time + interval : nextFrameNanos + interval;
+        }
+        Choreographer.getInstance().postFrameCallback(frameTick);
+    }
+
+    @Override public void onPause() {
+        if (renderPaused) return;
+        renderPaused = true;
+        rendering = false;
+        Choreographer.getInstance().removeFrameCallback(frameTick);
+        if (hasPointerCapture()) releasePointerCapture();
+        super.onPause();
+    }
+
+    @Override public void onResume() {
+        super.onResume();
+        renderPaused = false;
+        if (!rendering) {
+            rendering = true;
+            nextFrameNanos = 0;
+            Choreographer.getInstance().postFrameCallback(frameTick);
+        }
+    }
+
+    /** Destroy SDK GL resources on the owning thread before its instance is freed. */
+    public void releaseGl(Parsec old) {
+        if (old == null || renderPaused) return;
+        java.util.concurrent.CountDownLatch released = new java.util.concurrent.CountDownLatch(1);
+        queueEvent(() -> {
+            try { old.clientGLDestroy(); } finally { released.countDown(); }
+        });
+        try { released.await(1, java.util.concurrent.TimeUnit.SECONDS); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+
     /** Resolved per-tick wheel delta (base × user multiplier, rounded). */
     private int scaledTick(int ticks) {
+        if (reverseScroll) ticks = -ticks;
         int out = Math.round(ticks * (float) WHEEL_TICK_BASE * scrollSensitivity);
         // Preserve sign even for very small multipliers — at least one notch
         // in the direction the user is dragging so scroll never feels dead.
@@ -324,6 +391,13 @@ public class ClientGLSurface extends GLSurfaceView {
      *  mode, or a frozen finger position. Releases all mouse buttons on the
      *  host side, clears scroll accumulation, and re-centers the cursor. */
     public void resetTouchState() {
+        cursorScroller.abortAnimation();
+        cancelDirectPendingClick();
+        if (velocity != null) { velocity.recycle(); velocity = null; }
+        mouseScrollX = mouseScrollY = 0;
+        lastMouseButtons = 0;
+        pinching = panning = false;
+        zoomGesture = 0;
         scrollMode = false;
         scrollAccum = 0f;
         externalButtonHeld = false;
@@ -357,7 +431,11 @@ public class ClientGLSurface extends GLSurfaceView {
     public void renderInit() {
         setEGLContextClientVersion(2);
         setRenderer(new Renderer() {
-            @Override public void onSurfaceCreated(GL10 gl10, javax.microedition.khronos.egl.EGLConfig eglConfig) {}
+            @Override public void onSurfaceCreated(GL10 gl10, javax.microedition.khronos.egl.EGLConfig eglConfig) {
+                synchronized (parsecLock) {
+                    if (parsecAlive && parsec != null) parsec.clientGLDestroy();
+                }
+            }
             @Override public void onSurfaceChanged(GL10 gl10, int width, int height) {
                 surfaceWidth = width;
                 surfaceHeight = height;
@@ -373,7 +451,6 @@ public class ClientGLSurface extends GLSurfaceView {
             @Override public void onDrawFrame(GL10 gl10) {
                 synchronized (parsecLock) {
                     if (!parsecAlive || parsec == null) return;
-                    parsec.clientPollAudio();
                     // Drain client events (cursor mode, rumble, host clipboard)
                     // once per frame; the UI-thread IO pump reads the results.
                     parsec.clientPollEvents();
@@ -382,11 +459,16 @@ public class ClientGLSurface extends GLSurfaceView {
                 framesRendered++; // for the stats-overlay FPS estimate
             }
         });
-        setRenderMode(RENDERMODE_CONTINUOUSLY);
+        setRenderMode(RENDERMODE_WHEN_DIRTY);
+        rendering = true;
+        Choreographer.getInstance().postFrameCallback(frameTick);
         setPreserveEGLContextOnPause(true);
     }
 
     public void shutdown() {
+        rendering = false;
+        Choreographer.getInstance().removeFrameCallback(frameTick);
+        resetTouchState();
         synchronized (parsecLock) {
             parsecAlive = false;
             parsec = null;
@@ -403,48 +485,77 @@ public class ClientGLSurface extends GLSurfaceView {
         // wheel land on the right host buttons.
         if (isMouseSource(ev)) return handleMouseTouchEvent(ev);
 
-        // Zoom mode is opt-in via the FAB. When it's OFF, every touch flows
-        // straight to the regular trackpad / direct handler — pinches become
-        // scroll/touch events on the host, matching how a real precision
-        // touchpad behaves.
-        if (zoomEnabled) {
-            scaleDetector.onTouchEvent(ev);
-
-            int pointers = ev.getPointerCount();
-            int action = ev.getActionMasked();
-
-            if (action == MotionEvent.ACTION_POINTER_DOWN && pointers == 2) {
-                // While zoom mode is active, the 2-finger drag pans the
-                // surface unconditionally (matches RustDesk). At 1× the pan
-                // is clamped to (0,0) so it's a no-op; the user has to pinch
-                // first.
-                panning = true;
-                panLastCx = centroidX(ev);
-                panLastCy = centroidY(ev);
+        int action = ev.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            cursorScroller.abortAnimation();
+            multipleFingers = false;
+            zoomGesture = 0;
+            if (velocity != null) velocity.recycle();
+            velocity = VelocityTracker.obtain();
+        }
+        if (velocity != null) velocity.addMovement(ev);
+        if (ev.getPointerCount() > 1) multipleFingers = true;
+        if (zoomEnabled && !relativeMouseMode) {
+            if (action == MotionEvent.ACTION_POINTER_DOWN && ev.getPointerCount() == 2)
+                pinchSpan = distance(ev);
+            if (action == MotionEvent.ACTION_MOVE && ev.getPointerCount() == 2 && zoomGesture == 0) {
+                float spanChange = Math.abs(distance(ev) - pinchSpan);
+                float travel = Math.abs(centroidX(ev) - twoFingerDownCentroidX)
+                        + Math.abs(centroidY(ev) - twoFingerDownCentroidY);
+                if (spanChange > Math.max(12, pinchSpan * 0.08f)) zoomGesture = 2;
+                else if (travel > 12) zoomGesture = 1;
+                else return true;
             }
-            if (action == MotionEvent.ACTION_UP) {
-                panning = false;
-            }
-
-            if (panning && pointers >= 2 && action == MotionEvent.ACTION_MOVE
-                    && !pinching) {
-                float cx = centroidX(ev);
-                float cy = centroidY(ev);
-                panX += cx - panLastCx;
-                panY += cy - panLastCy;
-                panLastCx = cx;
-                panLastCy = cy;
-                clampPanAndApply();
+            if (zoomGesture != 1) scaleDetector.onTouchEvent(ev);
+            if (zoomGesture == 2) {
+                cancelDirectPendingClick();
+                if (directLeftHeld || tapTapHoldDragActive) sendButton(false);
+                directLeftHeld = tapTapHoldDragActive = twoFingerScroll = false;
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    pinching = false;
+                    zoomGesture = 0;
+                    if (velocity != null) { velocity.recycle(); velocity = null; }
+                }
                 return true;
             }
-            if (pinching || panning) return true;
         }
+        boolean fling = action == MotionEvent.ACTION_UP && trackpadMode && !relativeMouseMode
+                && !multipleFingers && !tapTapHoldDragActive && !externalButtonHeld
+                && Math.hypot(ev.getX() - downX, ev.getY() - downY) > TAP_SLOP_PX;
+        boolean handled = relativeMouseMode || trackpadMode ? onTrackpadEvent(ev) : onDirectTouchEvent(ev);
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            if (fling && velocity != null) {
+                velocity.computeCurrentVelocity(1000);
+                cursorScroller.fling((int) cursorX, (int) cursorY,
+                        (int) (velocity.getXVelocity() * sensitivity), (int) (velocity.getYVelocity() * sensitivity),
+                        0, Math.max(0, surfaceWidth - 1), 0, Math.max(0, surfaceHeight - 1));
+                postOnAnimation(this::stepCursorMomentum);
+            }
+            if (velocity != null) { velocity.recycle(); velocity = null; }
+        }
+        return handled;
+    }
 
-        // Under host-requested pointer-lock, absolute positioning is
-        // meaningless — always route through the trackpad (delta) path.
-        if (relativeMouseMode) return onTrackpadEvent(ev);
-        if (trackpadMode) return onTrackpadEvent(ev);
-        return onDirectTouchEvent(ev);
+    private float distance(MotionEvent event) {
+        return (float) Math.hypot(event.getX(0) - event.getX(1), event.getY(0) - event.getY(1));
+    }
+
+    private void stepCursorMomentum() {
+        if (!parsecAlive || !cursorScroller.computeScrollOffset()) return;
+        cursorX = cursorScroller.getCurrX();
+        cursorY = cursorScroller.getCurrY();
+        followCursor();
+        sendAbsoluteMotionMapped(cursorX, cursorY);
+        notifyCursor(true);
+        postOnAnimation(this::stepCursorMomentum);
+    }
+
+    private void followCursor() {
+        if (zoom > 1.001f) {
+            panX = getWidth() / 2f - cursorX * zoom;
+            panY = getHeight() / 2f - cursorY * zoom;
+            clampPanAndApply();
+        }
     }
 
     private float panLastCx = 0f, panLastCy = 0f;
@@ -475,7 +586,23 @@ public class ClientGLSurface extends GLSurfaceView {
      *  and the local cursor is hidden (the host draws its own). Toggled by the
      *  activity's IO pump from Parsec.clientGetCursorRelative(). */
     private volatile boolean relativeMouseMode = false;
-    public void setRelativeMouseMode(boolean on) { this.relativeMouseMode = on; }
+    public void setRelativeMouseMode(boolean on) {
+        relativeMouseMode = on;
+        cursorScroller.abortAnimation();
+        if (on && isAttachedToWindow() && hasWindowFocus()) requestPointerCapture();
+        else if (!on && hasPointerCapture()) releasePointerCapture();
+    }
+
+    public void restoreCursor(float x, float y) {
+        cursorX = clamp(x, 0, Math.max(0, surfaceWidth - 1));
+        cursorY = clamp(y, 0, Math.max(0, surfaceHeight - 1));
+        notifyCursor(trackpadMode && !relativeMouseMode);
+    }
+
+    @Override public boolean onCapturedPointerEvent(MotionEvent event) {
+        if (isMouseSource(event)) return handleMouseTouchEvent(event);
+        return super.onCapturedPointerEvent(event);
+    }
     public boolean isRelativeMouseMode() { return relativeMouseMode; }
 
     @Override
@@ -498,13 +625,19 @@ public class ClientGLSurface extends GLSurfaceView {
             }
             return true;
         }
+        if (action == MotionEvent.ACTION_BUTTON_PRESS || action == MotionEvent.ACTION_BUTTON_RELEASE)
+            return handleMouseTouchEvent(ev);
         if (action == MotionEvent.ACTION_SCROLL) {
             float vs = ev.getAxisValue(MotionEvent.AXIS_VSCROLL);
             float hs = ev.getAxisValue(MotionEvent.AXIS_HSCROLL);
             // Parsec wheel y is "positive = scroll down", Android VSCROLL is
             // "positive = away from user = scroll up", so we invert.
-            int ticksY = Math.round(-vs);
-            int ticksX = Math.round(hs);
+            mouseScrollY -= vs;
+            mouseScrollX += hs;
+            int ticksY = (int) mouseScrollY;
+            int ticksX = (int) mouseScrollX;
+            mouseScrollY -= ticksY;
+            mouseScrollX -= ticksX;
             if (ticksY != 0 || ticksX != 0) {
                 sendWheel(scaledTick(ticksX), scaledTick(ticksY));
             }
@@ -558,6 +691,8 @@ public class ClientGLSurface extends GLSurfaceView {
                     3 /* MOUSE_R */);
             dispatchMouseButton(changed, now, MotionEvent.BUTTON_TERTIARY,
                     2 /* MOUSE_MIDDLE */);
+            dispatchMouseButton(changed, now, MotionEvent.BUTTON_BACK, 4);
+            dispatchMouseButton(changed, now, MotionEvent.BUTTON_FORWARD, 5);
             lastMouseButtons = now;
         }
         return true;
@@ -646,6 +781,7 @@ public class ClientGLSurface extends GLSurfaceView {
                     final float x = ev.getX();
                     final float y = ev.getY();
                     cancelDirectPendingClick();
+                    if (action == MotionEvent.ACTION_CANCEL) return true;
                     sendAbsoluteMotionMapped(x, y);
                     sendButton(true);
                     sendButton(false);
@@ -742,6 +878,7 @@ public class ClientGLSurface extends GLSurfaceView {
                 } else {
                     cursorX = clamp(cursorX + dx * sensitivity, 0, surfaceWidth - 1);
                     cursorY = clamp(cursorY + dy * sensitivity, 0, surfaceHeight - 1);
+                    followCursor();
                     sendAbsoluteMotionMapped(cursorX, cursorY);
                     notifyCursor(true);
                 }
@@ -799,6 +936,10 @@ public class ClientGLSurface extends GLSurfaceView {
     }
 
     private void beginTwoFingerScroll(MotionEvent ev) {
+        firstFingerX = ev.getX(0);
+        firstFingerY = ev.getY(0);
+        secondFingerX = ev.getX(1);
+        secondFingerY = ev.getY(1);
         twoFingerScroll = true;
         twoFingerScrollAccum = 0f;
         twoFingerScrollAccumX = 0f;
@@ -840,6 +981,13 @@ public class ClientGLSurface extends GLSurfaceView {
         float totalDx = Math.abs(twoFingerLastCentroidX - twoFingerDownCentroidX);
         float totalDy = Math.abs(twoFingerLastCentroidY - twoFingerDownCentroidY);
         if (totalDx + totalDy > TWO_FINGER_TAP_SLOP_PX) return;
+        if (!relativeMouseMode) {
+            float x = Settings.RIGHTCLICK_SECOND.equals(rightClickPosition) ? secondFingerX
+                    : Settings.RIGHTCLICK_MIDDLE.equals(rightClickPosition) ? (firstFingerX + secondFingerX) / 2 : firstFingerX;
+            float y = Settings.RIGHTCLICK_SECOND.equals(rightClickPosition) ? secondFingerY
+                    : Settings.RIGHTCLICK_MIDDLE.equals(rightClickPosition) ? (firstFingerY + secondFingerY) / 2 : firstFingerY;
+            sendAbsoluteMotionMapped(x, y);
+        }
         synchronized (parsecLock) {
             if (parsecAlive && parsec != null) {
                 parsec.clientSendMouseButton(3 /* MOUSE_R */, true);
@@ -906,7 +1054,8 @@ public class ClientGLSurface extends GLSurfaceView {
         final float y = cursorY;
         post(new Runnable() {
             @Override public void run() {
-                if (trackpadListener != null) trackpadListener.onTrackpadCursorChanged(x, y, visible);
+                if (trackpadListener != null) trackpadListener.onTrackpadCursorChanged(
+                        getX() + x * zoom, getY() + y * zoom, visible);
             }
         });
     }
