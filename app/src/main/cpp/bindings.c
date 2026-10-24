@@ -1,51 +1,71 @@
 #include <stdlib.h>
 #include <stdbool.h>
-#include <memory.h>
 #include <string.h>
 #include <pthread.h>
-
+#include <stdatomic.h>
 #include <unistd.h>
-
 #include <jni.h>
 #include <android/log.h>
-
 #include "parsec.h"
 #include "aaudio.h"
 
-/* ---- Client-event state, updated from the GL render thread via
- *      clientPollEvents and read from the UI thread via the getters below.
- *      The app only ever has one active client, so module statics are fine. */
-static volatile int g_cursorRelative = 0;   // host requested relative (pointer-lock) mode
-static volatile int g_rumbleBig = 0;        // last large-motor rumble value (0-255)
-static volatile int g_rumbleSmall = 0;      // last small-motor rumble value (0-255)
-static volatile int g_rumbleNew = 0;        // 1 if an unconsumed rumble event is pending
-static pthread_mutex_t g_clipLock = PTHREAD_MUTEX_INITIALIZER;
-static char *g_pendingClipboard = NULL;     // owned malloc'd copy of latest host user-data text
+#define MAX_USER_DATA (1024 * 1024)
+#define MAX_CURSOR_PIXELS (1024 * 1024)
 
-/* User-data message id used for clipboard interop. The official Parsec
- * desktop host's reserved clipboard id isn't in this public header, so the
- * SEND path is best-effort/experimental; the RECEIVE path treats ANY host
- * user-data as clipboard text (a desktop host's only user-data to a guest
- * is the clipboard). */
-#define CLIPBOARD_MSG_ID 1
-
-static void logCallback(ParsecLogLevel level, char *msg, void *opaque)
-{
-    __android_log_print(ANDROID_LOG_INFO, "PARSEC", "%s", msg);
-}
+/* Java serializes JNI calls; the audio worker owns only audio polling/playback. */
+struct client_state {
+    Parsec *parsec;
+    struct aaudio *audio;
+    pthread_t audio_thread;
+    bool audio_started;
+    atomic_bool stop_audio;
+    int relative;
+    int rumble;
+    char *user_data[2];
+    ParsecCursor cursor;
+    int cursor_flags;
+    jint *cursor_pixels;
+    size_t cursor_count;
+};
 
 static void *getPointer(JNIEnv *env, jobject instance, const char *name)
 {
     jclass cls = (*env)->GetObjectClass(env, instance);
     jfieldID id = (*env)->GetFieldID(env, cls, name, "J");
-    return (void *) (*env)->GetLongField(env, instance, id);
+    (*env)->DeleteLocalRef(env, cls);
+    return (void *) (intptr_t) (*env)->GetLongField(env, instance, id);
 }
 
 static void setPointer(JNIEnv *env, jobject instance, const char *name, void *ptr)
 {
     jclass cls = (*env)->GetObjectClass(env, instance);
     jfieldID id = (*env)->GetFieldID(env, cls, name, "J");
-    (*env)->SetLongField(env, instance, id, (long) ptr);
+    (*env)->DeleteLocalRef(env, cls);
+    (*env)->SetLongField(env, instance, id, (jlong) (intptr_t) ptr);
+}
+
+static void logCallback(ParsecLogLevel level, char *msg, void *opaque)
+{
+    if (msg) __android_log_print(ANDROID_LOG_INFO, "PARSEC", "%s", msg);
+}
+
+static void *audioWorker(void *opaque)
+{
+    struct client_state *s = opaque;
+    while (!atomic_load(&s->stop_audio)) {
+        ParsecStatus rc = ParsecClientPollAudio(s->parsec, aaudio_play, 16, s->audio);
+        if (rc == PARSEC_NOT_RUNNING) usleep(20000);
+    }
+    return NULL;
+}
+
+static void stopAudio(struct client_state *s)
+{
+    if (s && s->audio_started) {
+        atomic_store(&s->stop_audio, true);
+        pthread_join(s->audio_thread, NULL);
+        s->audio_started = false;
+    }
 }
 
 JNIEXPORT void JNICALL
@@ -54,98 +74,116 @@ Java_parsec_bindings_Parsec_setLogCallback(JNIEnv *env, jobject instance)
     ParsecSetLogCallback(logCallback, NULL);
 }
 
+JNIEXPORT jint JNICALL
+Java_parsec_bindings_Parsec_version(JNIEnv *env, jobject instance)
+{
+    return (jint) ParsecVersion();
+}
+
 JNIEXPORT void JNICALL
 Java_parsec_bindings_Parsec_init(JNIEnv *env, jobject instance)
 {
-    Parsec *parsec = NULL;
-    ParsecInit(PARSEC_VER, NULL, NULL, &parsec);
-
-    struct aaduio *aaudio = NULL;
-    aaudio_init(&aaudio);
-
-    setPointer(env, instance, "parsec", parsec);
-    setPointer(env, instance, "aaudio", aaudio);
+    if (getPointer(env, instance, "state")) return;
+    struct client_state *s = calloc(1, sizeof(*s));
+    ParsecStatus rc = s ? ParsecInit(PARSEC_VER, NULL, NULL, &s->parsec) : ERR_DEFAULT;
+    if (rc != PARSEC_OK || !s->parsec) {
+        free(s);
+        jclass cls = (*env)->FindClass(env, "java/lang/IllegalStateException");
+        (*env)->ThrowNew(env, cls, "Unable to initialize Parsec SDK");
+        (*env)->DeleteLocalRef(env, cls);
+        return;
+    }
+    atomic_init(&s->stop_audio, false);
+    s->rumble = -1;
+    aaudio_init(&s->audio);
+    setPointer(env, instance, "state", s);
+    setPointer(env, instance, "parsec", s->parsec);
 }
 
 JNIEXPORT void JNICALL
 Java_parsec_bindings_Parsec_destroy(JNIEnv *env, jobject instance)
 {
-    struct aaduio *aaudio = getPointer(env, instance, "aaudio");
-    aaudio_destroy(&aaudio);
-
-    Parsec *parsec = getPointer(env, instance, "parsec");
-    ParsecDestroy(parsec);
-
+    struct client_state *s = getPointer(env, instance, "state");
+    if (!s) return;
+    stopAudio(s);
+    ParsecClientDisconnect(s->parsec);
+    ParsecDestroy(s->parsec);
+    aaudio_destroy(&s->audio);
+    free(s->user_data[0]);
+    free(s->user_data[1]);
+    free(s->cursor_pixels);
+    free(s);
+    setPointer(env, instance, "state", NULL);
     setPointer(env, instance, "parsec", NULL);
-    setPointer(env, instance, "aaudio", NULL);
 }
 
 JNIEXPORT jint JNICALL
 Java_parsec_bindings_Parsec_clientConnect(JNIEnv *env, jobject instance, jstring sessionID,
     jstring peerID, jint decoderSoftware, jint resolutionX, jint resolutionY, jint refreshRate)
 {
-    Parsec *parsec = getPointer(env, instance, "parsec");
-
-    const char *cSessionID = (*env)->GetStringUTFChars(env, sessionID, 0);
-    const char *cPeerID = (*env)->GetStringUTFChars(env, peerID, 0);
-
-    // Build a real ParsecClientConfig instead of passing NULL so the user's
-    // Settings actually reach the SDK. NOTE: resolutionX/Y + refreshRate only
-    // take effect when this client is the FIRST connection AND the owner of a
-    // HOST_DESKTOP machine (per the SDK docs) — i.e. when streaming your own
-    // PC. They're harmlessly ignored otherwise. Bitrate / H.265 / encoder-FPS
-    // are host-side encoder settings (ParsecHostConfig) with no client field,
-    // so they are intentionally NOT here.
-    ParsecClientConfig cfg = {0};
-    cfg.mediaContainer = CONTAINER_PARSEC; // native decode path
-    cfg.protocol = PROTO_MODE_BUD;         // Parsec's low-latency transport
+    struct client_state *s = getPointer(env, instance, "state");
+    if (!s || !sessionID || !peerID) return PARSEC_NOT_RUNNING;
+    const char *session = (*env)->GetStringUTFChars(env, sessionID, NULL);
+    if (!session) return ERR_DEFAULT;
+    const char *peer = (*env)->GetStringUTFChars(env, peerID, NULL);
+    if (!peer) { (*env)->ReleaseStringUTFChars(env, sessionID, session); return ERR_DEFAULT; }
+    ParsecClientConfig cfg = PARSEC_CLIENT_DEFAULTS;
     cfg.decoderSoftware = decoderSoftware ? 1 : 0;
     cfg.resolutionX = resolutionX;
     cfg.resolutionY = resolutionY;
     cfg.refreshRate = refreshRate;
-    cfg.pngCursor = false;                 // we render our own cursor
-
-    // Fresh session — clear any stale event state.
-    g_cursorRelative = 0;
-    g_rumbleNew = 0;
-
-    ParsecStatus e = ParsecClientConnect(parsec, &cfg, (char *) cSessionID, (char *) cPeerID);
-
-    (*env)->ReleaseStringUTFChars(env, sessionID, cSessionID);
-    (*env)->ReleaseStringUTFChars(env, peerID, cPeerID);
-
-    return (jint) e;
-}
-
-JNIEXPORT void JNICALL
-Java_parsec_bindings_Parsec_clientPollAudio(JNIEnv *env, jobject instance)
-{
-    Parsec *parsec = getPointer(env, instance, "parsec");
-    struct aaudio *aaudio = getPointer(env, instance, "aaudio");
-
-    ParsecClientPollAudio(parsec, aaudio_play, 0, aaudio);
+    cfg.pngCursor = false;
+    ParsecStatus rc = ParsecClientConnect(s->parsec, &cfg, (char *) session, (char *) peer);
+    (*env)->ReleaseStringUTFChars(env, sessionID, session);
+    (*env)->ReleaseStringUTFChars(env, peerID, peer);
+    if (rc == PARSEC_OK && !s->audio_started) {
+        atomic_store(&s->stop_audio, false);
+        s->audio_started = pthread_create(&s->audio_thread, NULL, audioWorker, s) == 0;
+    }
+    return rc;
 }
 
 JNIEXPORT void JNICALL
 Java_parsec_bindings_Parsec_clientDestroy(JNIEnv *env, jobject instance)
 {
-    Parsec *parsec = getPointer(env, instance, "parsec");
-    ParsecClientDisconnect(parsec);
+    struct client_state *s = getPointer(env, instance, "state");
+    if (s) { stopAudio(s); ParsecClientDisconnect(s->parsec); }
 }
 
 JNIEXPORT void JNICALL
-Java_parsec_bindings_Parsec_clientSetDimensions(JNIEnv *env, jobject instance,
-    jint x, jint y)
+Java_parsec_bindings_Parsec_clientSetMuted(JNIEnv *env, jobject instance, jboolean muted)
 {
-    Parsec *parsec = getPointer(env, instance, "parsec");
-    ParsecClientSetDimensions(parsec, (uint32_t) x, (uint32_t) y, 1.0f);
+    struct client_state *s = getPointer(env, instance, "state");
+    if (s) aaudio_mute(s->audio, muted);
+}
+
+JNIEXPORT jint JNICALL
+Java_parsec_bindings_Parsec_clientGetStatus(JNIEnv *env, jobject instance)
+{
+    Parsec *ps = getPointer(env, instance, "parsec");
+    ParsecClientStatus status = {0};
+    return ps ? ParsecClientGetStatus(ps, &status) : PARSEC_NOT_RUNNING;
 }
 
 JNIEXPORT void JNICALL
+Java_parsec_bindings_Parsec_clientSetDimensions(JNIEnv *env, jobject instance, jint x, jint y)
+{
+    Parsec *ps = getPointer(env, instance, "parsec");
+    if (ps && x > 0 && y > 0) ParsecClientSetDimensions(ps, (uint32_t) x, (uint32_t) y, 1.0f);
+}
+
+JNIEXPORT jint JNICALL
 Java_parsec_bindings_Parsec_clientGLRenderFrame(JNIEnv *env, jobject instance)
 {
-    Parsec *parsec = getPointer(env, instance, "parsec");
-    ParsecClientGLRenderFrame(parsec, 0);
+    Parsec *ps = getPointer(env, instance, "parsec");
+    return ps ? ParsecClientGLRenderFrame(ps, 0) : PARSEC_NOT_RUNNING;
+}
+
+JNIEXPORT void JNICALL
+Java_parsec_bindings_Parsec_clientGLDestroy(JNIEnv *env, jobject instance)
+{
+    Parsec *ps = getPointer(env, instance, "parsec");
+    if (ps) ParsecClientGLDestroy(ps);
 }
 
 JNIEXPORT jint JNICALL
@@ -153,6 +191,7 @@ Java_parsec_bindings_Parsec_clientSendMouseMotion(JNIEnv *env, jobject instance,
     jboolean relative, jint x, jint y)
 {
     Parsec *parsec = getPointer(env, instance, "parsec");
+    if (!parsec) return PARSEC_NOT_RUNNING;
 
     ParsecMessage msg = {};
     msg.type = MESSAGE_MOUSE_MOTION;
@@ -167,6 +206,7 @@ JNIEXPORT jint JNICALL
 Java_parsec_bindings_Parsec_clientSendMouseWheel(JNIEnv *env, jobject instance, jint x, jint y)
 {
     Parsec *parsec = getPointer(env, instance, "parsec");
+    if (!parsec) return PARSEC_NOT_RUNNING;
 
     ParsecMessage msg = {};
     msg.type = MESSAGE_MOUSE_WHEEL;
@@ -181,6 +221,7 @@ Java_parsec_bindings_Parsec_clientSendGamepadButton(JNIEnv *env, jobject instanc
         jint gamepadID, jint button, jboolean pressed)
 {
     Parsec *parsec = getPointer(env, instance, "parsec");
+    if (!parsec) return PARSEC_NOT_RUNNING;
 
     ParsecMessage msg = {};
     msg.type = MESSAGE_GAMEPAD_BUTTON;
@@ -196,6 +237,7 @@ Java_parsec_bindings_Parsec_clientSendGamepadAxis(JNIEnv *env, jobject instance,
         jint gamepadID, jint axis, jint value)
 {
     Parsec *parsec = getPointer(env, instance, "parsec");
+    if (!parsec) return PARSEC_NOT_RUNNING;
 
     ParsecMessage msg = {};
     msg.type = MESSAGE_GAMEPAD_AXIS;
@@ -213,6 +255,7 @@ Java_parsec_bindings_Parsec_clientSendGamepadUnplug(JNIEnv *env, jobject instanc
         jint gamepadID)
 {
     Parsec *parsec = getPointer(env, instance, "parsec");
+    if (!parsec) return PARSEC_NOT_RUNNING;
     ParsecMessage msg = {};
     msg.type = MESSAGE_GAMEPAD_UNPLUG;
     msg.gamepadUnplug.id = (uint32_t) gamepadID;
@@ -224,6 +267,7 @@ Java_parsec_bindings_Parsec_clientSendKeyboard(JNIEnv *env, jobject instance,
         jint keyCode, jint keyMod, jboolean pressed)
 {
     Parsec *parsec = getPointer(env, instance, "parsec");
+    if (!parsec) return PARSEC_NOT_RUNNING;
 
     ParsecMessage msg = {};
     msg.type = MESSAGE_KEYBOARD;
@@ -239,6 +283,7 @@ Java_parsec_bindings_Parsec_clientSendMouseButton(JNIEnv *env, jobject instance,
     jint button, jboolean pressed)
 {
     Parsec *parsec = getPointer(env, instance, "parsec");
+    if (!parsec) return PARSEC_NOT_RUNNING;
 
     ParsecMessage msg = {};
     msg.type = MESSAGE_MOUSE_BUTTON;
@@ -246,36 +291,6 @@ Java_parsec_bindings_Parsec_clientSendMouseButton(JNIEnv *env, jobject instance,
     msg.mouseButton.pressed = pressed;
 
     return (jint) ParsecClientSendMessage(parsec, &msg);
-}
-
-JNIEXPORT jboolean JNICALL
-Java_parsec_bindings_Parsec_clientHasNetworkFailure(JNIEnv *env, jobject instance)
-{
-    Parsec *parsec = getPointer(env, instance, "parsec");
-    if (!parsec) return JNI_TRUE;
-    ParsecClientStatus status = {0};
-    ParsecStatus rc = ParsecClientGetStatus(parsec, &status);
-    if (rc != PARSEC_OK) return JNI_TRUE;
-    return status.networkFailure ? JNI_TRUE : JNI_FALSE;
-}
-
-/** Returns a freeze-detection signal — the SDK's reported decode latency
- *  (milliseconds, float) scaled to 1000ths and packed in a jlong alongside
- *  the network latency. Bits 32-63 carry decodeLatency * 1000; bits 0-31
- *  carry networkLatency * 1000. The activity-level watchdog samples this
- *  every 5s; if neither value changes for 15s the client is considered
- *  hung and reconnects, even when networkFailure has NOT tripped (which
- *  happens when the transport is alive but no fresh frames decode). */
-JNIEXPORT jlong JNICALL
-Java_parsec_bindings_Parsec_clientGetFreezeSignal(JNIEnv *env, jobject instance)
-{
-    Parsec *parsec = getPointer(env, instance, "parsec");
-    if (!parsec) return 0;
-    ParsecClientStatus status = {0};
-    if (ParsecClientGetStatus(parsec, &status) != PARSEC_OK) return 0;
-    jlong dec = (jlong) (status.metrics.decodeLatency * 1000.0f);
-    jlong net = (jlong) (status.metrics.networkLatency * 1000.0f);
-    return (dec << 32) | (net & 0xFFFFFFFFL);
 }
 
 /* ---- Latency / decoder metrics for the stats overlay ---- */
@@ -319,49 +334,78 @@ Java_parsec_bindings_Parsec_clientDecoderFellBack(JNIEnv *env, jobject instance)
     return status.decoderFallback ? JNI_TRUE : JNI_FALSE;
 }
 
-/* ---- Client event pump. Called from the GL render thread once per frame.
- *      Drains all pending events (timeout 0) and stashes their state for the
- *      UI thread to consume via the getters below. */
+
+JNIEXPORT jlong JNICALL
+Java_parsec_bindings_Parsec_clientGetFreezeSignal(JNIEnv *env, jobject instance)
+{
+    Parsec *ps = getPointer(env, instance, "parsec");
+    if (!ps) return 0;
+    ParsecClientStatus status = {0};
+    if (ParsecClientGetStatus(ps, &status) != PARSEC_OK) return 0;
+    jlong dec = (jlong) (status.metrics.decodeLatency * 1000.0f);
+    jlong net = (jlong) (status.metrics.networkLatency * 1000.0f);
+    return (dec << 32) | (net & 0xffffffffL);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_parsec_bindings_Parsec_clientHasNetworkFailure(JNIEnv *env, jobject instance)
+{
+    Parsec *ps = getPointer(env, instance, "parsec");
+    ParsecClientStatus status = {0};
+    return !ps || ParsecClientGetStatus(ps, &status) != PARSEC_OK || status.networkFailure;
+}
+
 JNIEXPORT void JNICALL
 Java_parsec_bindings_Parsec_clientPollEvents(JNIEnv *env, jobject instance)
 {
-    Parsec *parsec = getPointer(env, instance, "parsec");
-    if (!parsec) return;
-
-    ParsecClientEvent evt;
-    while (ParsecClientPollEvents(parsec, 0, &evt)) {
-        switch (evt.type) {
-            case CLIENT_EVENT_CURSOR:
-                if (evt.cursor.cursor.modeUpdate)
-                    g_cursorRelative = evt.cursor.cursor.relative ? 1 : 0;
-                // We render our own cursor, so drain any image buffer to
-                // avoid leaking it.
-                if (evt.cursor.cursor.imageUpdate && evt.cursor.key) {
-                    void *buf = ParsecGetBuffer(parsec, evt.cursor.key);
-                    if (buf) ParsecFree(buf);
-                }
-                break;
-            case CLIENT_EVENT_RUMBLE:
-                g_rumbleBig = evt.rumble.motorBig;
-                g_rumbleSmall = evt.rumble.motorSmall;
-                g_rumbleNew = 1;
-                break;
-            case CLIENT_EVENT_USER_DATA: {
-                void *buf = ParsecGetBuffer(parsec, evt.userData.key);
-                if (buf) {
-                    char *copy = strdup((const char *) buf);
-                    ParsecFree(buf);
-                    if (copy) {
-                        pthread_mutex_lock(&g_clipLock);
-                        free(g_pendingClipboard);
-                        g_pendingClipboard = copy;
-                        pthread_mutex_unlock(&g_clipLock);
+    struct client_state *s = getPointer(env, instance, "state");
+    if (!s) return;
+    ParsecClientEvent e;
+    while (ParsecClientPollEvents(s->parsec, 0, &e)) {
+        if (e.type == CLIENT_EVENT_CURSOR) {
+            ParsecCursor c = e.cursor.cursor;
+            if (c.modeUpdate) {
+                s->relative = c.relative;
+                s->cursor.positionX = c.positionX;
+                s->cursor.positionY = c.positionY;
+                s->cursor_flags |= 1;
+            }
+            if (c.imageUpdate) {
+                void *buffer = ParsecGetBuffer(s->parsec, e.cursor.key);
+                size_t count = (size_t) c.width * c.height;
+                if (count <= MAX_CURSOR_PIXELS && c.size >= count * 4 && (!count || buffer)) {
+                    jint *pixels = count ? malloc(count * sizeof(jint)) : NULL;
+                    if (!count || pixels) {
+                        const uint8_t *rgba = buffer;
+                        for (size_t i = 0; i < count; i++) {
+                            pixels[i] = (jint) ((uint32_t) rgba[i*4+3] << 24 | rgba[i*4] << 16
+                                              | rgba[i*4+1] << 8 | rgba[i*4+2]);
+                        }
+                        free(s->cursor_pixels);
+                        s->cursor_pixels = pixels;
+                        s->cursor_count = count;
+                        s->cursor.width = c.width;
+                        s->cursor.height = c.height;
+                        s->cursor.hotX = c.hotX < c.width ? c.hotX : 0;
+                        s->cursor.hotY = c.hotY < c.height ? c.hotY : 0;
+                        s->cursor_flags |= 2;
                     }
                 }
-                break;
+                if (buffer) ParsecFree(buffer);
             }
-            default:
-                break;
+        } else if (e.type == CLIENT_EVENT_RUMBLE) {
+            s->rumble = (e.rumble.motorBig << 8) | e.rumble.motorSmall;
+        } else if (e.type == CLIENT_EVENT_USER_DATA) {
+            char *buffer = ParsecGetBuffer(s->parsec, e.userData.key);
+            int slot = e.userData.id == 11 ? 0 : e.userData.id == 12 ? 1 : -1;
+            if (buffer && slot >= 0) {
+                size_t length = strnlen(buffer, MAX_USER_DATA + 1);
+                if (length <= MAX_USER_DATA) {
+                    char *copy = strndup(buffer, length);
+                    if (copy) { free(s->user_data[slot]); s->user_data[slot] = copy; }
+                }
+            }
+            if (buffer) ParsecFree(buffer);
         }
     }
 }
@@ -369,42 +413,65 @@ Java_parsec_bindings_Parsec_clientPollEvents(JNIEnv *env, jobject instance)
 JNIEXPORT jboolean JNICALL
 Java_parsec_bindings_Parsec_clientGetCursorRelative(JNIEnv *env, jobject instance)
 {
-    return g_cursorRelative ? JNI_TRUE : JNI_FALSE;
+    struct client_state *s = getPointer(env, instance, "state");
+    return s && s->relative;
 }
 
-/** Returns packed (big<<8 | small) rumble values if a new rumble event is
- *  pending, clearing the flag; otherwise -1. */
+JNIEXPORT jintArray JNICALL
+Java_parsec_bindings_Parsec_clientPollCursor(JNIEnv *env, jobject instance)
+{
+    struct client_state *s = getPointer(env, instance, "state");
+    if (!s || !s->cursor_flags) return NULL;
+    bool image = (s->cursor_flags & 2) != 0;
+    jint header[] = {s->relative, s->cursor_flags & 1, image,
+        (jint) s->cursor.positionX, (jint) s->cursor.positionY,
+        s->cursor.width, s->cursor.height, s->cursor.hotX, s->cursor.hotY};
+    jintArray result = (*env)->NewIntArray(env, 9 + (image ? s->cursor_count : 0));
+    if (!result) return NULL;
+    (*env)->SetIntArrayRegion(env, result, 0, 9, header);
+    if (image && s->cursor_count) (*env)->SetIntArrayRegion(env, result, 9, s->cursor_count, s->cursor_pixels);
+    s->cursor_flags = 0;
+    return result;
+}
+
 JNIEXPORT jint JNICALL
 Java_parsec_bindings_Parsec_clientPollRumble(JNIEnv *env, jobject instance)
 {
-    if (!g_rumbleNew) return -1;
-    g_rumbleNew = 0;
-    return ((g_rumbleBig & 0xFF) << 8) | (g_rumbleSmall & 0xFF);
+    struct client_state *s = getPointer(env, instance, "state");
+    if (!s) return -1;
+    int value = s->rumble;
+    s->rumble = -1;
+    return value;
 }
 
-/** Returns the latest host user-data (clipboard) text and clears it, or null. */
-JNIEXPORT jstring JNICALL
-Java_parsec_bindings_Parsec_clientPollClipboard(JNIEnv *env, jobject instance)
+JNIEXPORT jbyteArray JNICALL
+Java_parsec_bindings_Parsec_clientPollUserData(JNIEnv *env, jobject instance, jint id)
 {
-    char *s = NULL;
-    pthread_mutex_lock(&g_clipLock);
-    s = g_pendingClipboard;
-    g_pendingClipboard = NULL;
-    pthread_mutex_unlock(&g_clipLock);
-    if (!s) return NULL;
-    jstring js = (*env)->NewStringUTF(env, s);
-    free(s);
-    return js;
+    struct client_state *s = getPointer(env, instance, "state");
+    int slot = id == 11 ? 0 : id == 12 ? 1 : -1;
+    if (!s || slot < 0 || !s->user_data[slot]) return NULL;
+    char *data = s->user_data[slot];
+    size_t length = strlen(data);
+    jbyteArray result = (*env)->NewByteArray(env, length);
+    if (!result) return NULL;
+    (*env)->SetByteArrayRegion(env, result, 0, length, (const jbyte *) data);
+    free(data);
+    s->user_data[slot] = NULL;
+    return result;
 }
 
 JNIEXPORT jint JNICALL
-Java_parsec_bindings_Parsec_clientSendUserData(JNIEnv *env, jobject instance,
-    jint id, jstring text)
+Java_parsec_bindings_Parsec_clientSendUserDataBytes(JNIEnv *env, jobject instance,
+                                                  jint id, jbyteArray bytes)
 {
-    Parsec *parsec = getPointer(env, instance, "parsec");
-    if (!parsec || !text) return -1;
-    const char *c = (*env)->GetStringUTFChars(env, text, 0);
-    ParsecStatus e = ParsecClientSendUserData(parsec, (uint32_t) id, (char *) c);
-    (*env)->ReleaseStringUTFChars(env, text, c);
-    return (jint) e;
+    Parsec *ps = getPointer(env, instance, "parsec");
+    if (!ps || !bytes) return PARSEC_NOT_RUNNING;
+    jsize length = (*env)->GetArrayLength(env, bytes);
+    if (length > MAX_USER_DATA || (id != 9 && id != 10 && id != 11)) return ERR_DEFAULT;
+    char *data = calloc((size_t) length + 1, 1);
+    if (!data) return ERR_DEFAULT;
+    (*env)->GetByteArrayRegion(env, bytes, 0, length, (jbyte *) data);
+    ParsecStatus rc = (*env)->ExceptionCheck(env) ? ERR_DEFAULT : ParsecClientSendUserData(ps, id, data);
+    free(data);
+    return rc;
 }
