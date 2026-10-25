@@ -2,6 +2,7 @@ package com.example.parsecdemo;
 
 import android.content.Intent;
 import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.AsyncTask;
@@ -23,6 +24,7 @@ import com.google.android.material.bottomnavigation.BottomNavigationView;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.card.MaterialCardView;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.google.android.material.navigation.NavigationBarView;
 import com.google.android.material.progressindicator.CircularProgressIndicator;
 
 import java.text.SimpleDateFormat;
@@ -63,6 +65,7 @@ public class HostListActivity extends AppCompatActivity {
     private FrameLayout settingsOverlay;
     private FrameLayout loadingOverlay;
     private Settings settings;
+    private BottomNavigationView bottomTabs;
 
     private enum Tab { HOSTS, FRIENDS }
     private Tab currentTab = Tab.HOSTS;
@@ -101,8 +104,10 @@ public class HostListActivity extends AppCompatActivity {
         col.addView(pages, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        col.addView(buildBottomTabs(), new LinearLayout.LayoutParams(
+        bottomTabs = buildBottomTabs();
+        col.addView(bottomTabs, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        updateBottomTabs();
 
         root.addView(col, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -127,6 +132,27 @@ public class HostListActivity extends AppCompatActivity {
     @Override protected void onResume() {
         super.onResume();
         refreshLastHostCard();
+    }
+
+    @Override public void onConfigurationChanged(Configuration config) {
+        super.onConfigurationChanged(config);
+        updateBottomTabs();
+    }
+
+    private void updateBottomTabs() {
+        boolean landscape = getResources().getConfiguration().orientation
+                == Configuration.ORIENTATION_LANDSCAPE;
+        bottomTabs.setLabelVisibilityMode(landscape ? NavigationBarView.LABEL_VISIBILITY_UNLABELED
+                : NavigationBarView.LABEL_VISIBILITY_AUTO);
+        bottomTabs.setMinimumHeight(landscape ? dp(48) : getResources().getDimensionPixelSize(
+                com.google.android.material.R.dimen.m3_bottom_nav_min_height));
+        bottomTabs.setItemPaddingTop(landscape ? dp(8) : getResources().getDimensionPixelSize(
+                com.google.android.material.R.dimen.m3_bottom_nav_item_padding_top));
+        bottomTabs.setItemPaddingBottom(landscape ? dp(8) : getResources().getDimensionPixelSize(
+                com.google.android.material.R.dimen.m3_bottom_nav_item_padding_bottom));
+        ViewGroup.LayoutParams lp = bottomTabs.getLayoutParams();
+        lp.height = landscape ? dp(48) : ViewGroup.LayoutParams.WRAP_CONTENT;
+        bottomTabs.setLayoutParams(lp);
     }
 
     @Override protected void onNewIntent(Intent intent) {
