@@ -8,6 +8,8 @@ import android.content.Intent;
 import android.content.res.Configuration;
 import android.os.Looper;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.LinearLayout;
 
 import com.google.android.material.bottomnavigation.BottomNavigationView;
 import com.google.android.material.navigation.NavigationBarView;
@@ -21,6 +23,44 @@ import org.robolectric.annotation.Config;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 34, qualifiers = "land")
 public class HostListLayoutTest {
+    @Test public void existingHostEntriesFitAfterRotationAndWindowResize() {
+        Intent intent = new Intent().putExtra(LoginActivity.EXTRA_SESSION_ID, "test-session");
+        try (var controller = Robolectric.buildActivity(HostListActivity.class, intent)) {
+            setField(controller.get(), "refreshing", true);
+            HostListActivity activity = controller.setup().get();
+            LinearLayout hosts = getField(activity, "hostsContainer");
+            View card = callInstanceMethod(activity, "makeHostCard", ClassParameter.from(
+                    ParsecApi.Host.class, new ParsecApi.Host("test-peer", "Test desktop", "User", true)));
+            hosts.addView(card);
+            View root = getField(activity, "root");
+            float density = activity.getResources().getDisplayMetrics().density;
+            Configuration landscape = new Configuration(activity.getResources().getConfiguration());
+            Configuration portrait = new Configuration(landscape);
+            portrait.orientation = Configuration.ORIENTATION_PORTRAIT;
+            portrait.screenWidthDp = 360;
+            portrait.screenHeightDp = 800;
+
+            for (int width : new int[]{800, 360, 800, 280}) {
+                controller.configurationChange(width < 400 ? portrait : landscape);
+                shadowOf(Looper.getMainLooper()).idle();
+                int px = Math.round(width * density);
+                int height = Math.round(600 * density);
+                root.measure(View.MeasureSpec.makeMeasureSpec(px, View.MeasureSpec.EXACTLY),
+                        View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY));
+                root.layout(0, 0, px, height);
+                assertTrue("Host card's left edge must fit a " + width + "dp window", card.getLeft() >= 0);
+                assertTrue("Host card's right edge must fit a " + width + "dp window",
+                        card.getRight() <= hosts.getWidth());
+                assertEquals(hosts.getWidth(), card.getWidth());
+                ViewGroup inner = (ViewGroup) ((ViewGroup) card).getChildAt(0);
+                View connect = inner.getChildAt(inner.getChildCount() - 1);
+                assertTrue("Connect must remain inside the card", connect.getRight() <= card.getWidth());
+                assertTrue("Connect must stay usable", connect.getWidth() > 0);
+                assertSame(card, hosts.getChildAt(0));
+            }
+        }
+    }
+
     @Test public void landscapeTabsAreCompactAndRotationRestoresPortraitLabels() {
         Intent intent = new Intent().putExtra(LoginActivity.EXTRA_SESSION_ID, "test-session");
         try (var controller = Robolectric.buildActivity(HostListActivity.class, intent)) {

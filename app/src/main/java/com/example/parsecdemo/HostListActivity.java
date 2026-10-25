@@ -378,7 +378,7 @@ public class HostListActivity extends AppCompatActivity {
                     section.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
                     section.setPadding(dp(8), dp(16), 0, dp(8));
                     LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(
-                            Math.min(getResources().getDisplayMetrics().widthPixels - dp(32), dp(540)),
+                            ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.WRAP_CONTENT);
                     sLp.gravity = Gravity.CENTER_HORIZONTAL;
                     friendsContainer.addView(section, sLp);
@@ -458,7 +458,7 @@ public class HostListActivity extends AppCompatActivity {
 
         card.addView(inner);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                Math.min(getResources().getDisplayMetrics().widthPixels - dp(32), dp(540)),
+                ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.gravity = Gravity.CENTER_HORIZONTAL;
         lp.bottomMargin = dp(12);
@@ -624,7 +624,7 @@ public class HostListActivity extends AppCompatActivity {
         card.addView(inner);
 
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                Math.min(getResources().getDisplayMetrics().widthPixels - dp(32), dp(540)),
+                ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.gravity = Gravity.CENTER_HORIZONTAL;
         lp.bottomMargin = dp(12);
