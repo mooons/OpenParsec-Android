@@ -6,6 +6,7 @@ import android.view.InputDevice;
 import android.view.Choreographer;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
+import android.view.ViewConfiguration;
 
 import javax.microedition.khronos.opengles.GL10;
 
@@ -74,8 +75,9 @@ public class ClientGLSurface extends GLSurfaceView {
     private float downX = 0f;
     private float downY = 0f;
     private long downTime = 0L;
-    private static final float TAP_SLOP_PX = 12f;
-    private static final long TAP_MAX_MS = 180L;
+    private final int tapSlop;
+    private final int doubleTapSlop;
+    private boolean tapMoved;
 
     // ----- Multi-touch scroll state (used in both direct & trackpad modes) -----
     /** Engaged when a second finger touches down during a gesture. While true,
@@ -102,14 +104,12 @@ public class ClientGLSurface extends GLSurfaceView {
 
     // ----- Tap-tap-hold drag (trackpad mode) -----
     /** Time of the most recent ACTION_UP that completed a quick tap. A second
-     *  ACTION_DOWN within {@link #TAP_TAP_HOLD_WINDOW_MS} of this time engages
+     *  ACTION_DOWN within Android's double-tap timeout of this time engages
      *  click-and-drag: the left button is held while that finger moves, and
      *  released on its lift. Standard trackpad behavior. */
     private long lastTapUpMs = 0L;
     private float lastTapUpX = 0f, lastTapUpY = 0f;
     private boolean tapTapHoldDragActive = false;
-    private static final long TAP_TAP_HOLD_WINDOW_MS = 280L;
-    private static final float TAP_TAP_HOLD_SLOP_PX = 32f;
 
     /** Left button is currently held by direct-touch mode (1-finger drag). */
     private boolean directLeftHeld = false;
@@ -147,6 +147,9 @@ public class ClientGLSurface extends GLSurfaceView {
 
     public ClientGLSurface(Context context) {
         super(context);
+        ViewConfiguration config = ViewConfiguration.get(context);
+        tapSlop = config.getScaledTouchSlop();
+        doubleTapSlop = config.getScaledDoubleTapSlop();
         scaleDetector = new ScaleGestureDetector(context,
                 new ScaleGestureDetector.SimpleOnScaleGestureListener() {
                     @Override public boolean onScaleBegin(ScaleGestureDetector d) {
@@ -250,6 +253,7 @@ public class ClientGLSurface extends GLSurfaceView {
     }
 
     public void setTrackpadMode(boolean enabled) {
+        if (trackpadMode != enabled) resetTouchState();
         this.trackpadMode = enabled;
         if (enabled) {
             if (surfaceWidth > 0 && surfaceHeight > 0) {
@@ -773,6 +777,7 @@ public class ClientGLSurface extends GLSurfaceView {
                 downX = lastX;
                 downY = lastY;
                 downTime = ev.getEventTime();
+                tapMoved = false;
                 // Snapshot the cursor so we can roll it back if a second
                 // finger lands and turns this into a 2-finger scroll.
                 gestureStartCursorX = cursorX;
@@ -782,11 +787,11 @@ public class ClientGLSurface extends GLSurfaceView {
                 // Tap-tap-hold drag: if this DOWN follows a quick recent tap-up
                 // near the same spot, engage left-button drag for this gesture.
                 long sinceLastTap = downTime - lastTapUpMs;
-                float distFromLastTap = Math.abs(downX - lastTapUpX) + Math.abs(downY - lastTapUpY);
+                double distFromLastTap = Math.hypot(downX - lastTapUpX, downY - lastTapUpY);
                 if (lastTapUpMs > 0
-                        && sinceLastTap <= TAP_TAP_HOLD_WINDOW_MS
-                        && distFromLastTap <= TAP_TAP_HOLD_SLOP_PX
-                        && !externalButtonHeld) {
+                        && sinceLastTap >= 0 && sinceLastTap <= ViewConfiguration.getDoubleTapTimeout()
+                        && distFromLastTap <= doubleTapSlop
+                        && !externalButtonHeld && !scrollMode) {
                     tapTapHoldDragActive = true;
                     sendButton(true);
                 }
@@ -824,6 +829,7 @@ public class ClientGLSurface extends GLSurfaceView {
                 }
                 float dx = ev.getX() - lastX;
                 float dy = ev.getY() - lastY;
+                if (Math.hypot(ev.getX() - downX, ev.getY() - downY) > tapSlop) tapMoved = true;
                 lastX = ev.getX();
                 lastY = ev.getY();
                 if (scrollMode) {
@@ -874,10 +880,10 @@ public class ClientGLSurface extends GLSurfaceView {
                 long dt = ev.getEventTime() - downTime;
                 float totalDx = ev.getX() - downX;
                 float totalDy = ev.getY() - downY;
-                boolean moved = (totalDx * totalDx + totalDy * totalDy) > TAP_SLOP_PX * TAP_SLOP_PX;
+                boolean moved = tapMoved || Math.hypot(totalDx, totalDy) > tapSlop;
                 // Tap-to-click is suppressed while an external mouse button is held
                 // (the user is mid-click-drag) and while in scroll mode.
-                if (!moved && dt <= TAP_MAX_MS && !externalButtonHeld && !scrollMode) {
+                if (!moved && dt < ViewConfiguration.getLongPressTimeout() && !externalButtonHeld && !scrollMode) {
                     sendButton(true);
                     sendButton(false);
                     // Remember this tap so a quick follow-up tap-and-hold can
