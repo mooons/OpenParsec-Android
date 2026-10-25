@@ -52,6 +52,11 @@ public class HostListLayoutTest {
                 assertTrue("Host card's right edge must fit a " + width + "dp window",
                         card.getRight() <= hosts.getWidth());
                 assertEquals(hosts.getWidth(), card.getWidth());
+                assertEquals("Entries should shrink with the window but stop at 540dp",
+                        Math.min(Math.round(540 * density), px - Math.round(32 * density)), card.getWidth());
+                View listParent = (View) hosts.getParent();
+                assertEquals("The bounded list should stay centered", listParent.getWidth() / 2f,
+                        hosts.getX() + hosts.getWidth() / 2f, 1f);
                 ViewGroup inner = (ViewGroup) ((ViewGroup) card).getChildAt(0);
                 View connect = inner.getChildAt(inner.getChildCount() - 1);
                 assertTrue("Connect must remain inside the card", connect.getRight() <= card.getWidth());

@@ -298,11 +298,8 @@ public class HostListActivity extends AppCompatActivity {
         colL.addView(lastHostCard);
         refreshLastHostCard();
 
-        hostsContainer = new LinearLayout(this);
-        hostsContainer.setOrientation(LinearLayout.VERTICAL);
-        hostsContainer.setGravity(Gravity.CENTER_HORIZONTAL);
-        colL.addView(hostsContainer, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        hostsContainer = buildEntryList();
+        colL.addView(hostsContainer);
 
         sv.addView(colL);
         return sv;
@@ -328,14 +325,29 @@ public class HostListActivity extends AppCompatActivity {
         hLp.bottomMargin = dp(12);
         colL.addView(friendsHeader, hLp);
 
-        friendsContainer = new LinearLayout(this);
-        friendsContainer.setOrientation(LinearLayout.VERTICAL);
-        friendsContainer.setGravity(Gravity.CENTER_HORIZONTAL);
-        colL.addView(friendsContainer, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        friendsContainer = buildEntryList();
+        colL.addView(friendsContainer);
 
         sv.addView(colL);
         return sv;
+    }
+
+    private LinearLayout buildEntryList() {
+        LinearLayout list = new LinearLayout(this) {
+            @Override protected void onMeasure(int widthSpec, int heightSpec) {
+                // Reapply the width cap against the current parent bounds on every layout.
+                super.onMeasure(MeasureSpec.makeMeasureSpec(
+                        Math.min(MeasureSpec.getSize(widthSpec), dp(540)),
+                        MeasureSpec.getMode(widthSpec)), heightSpec);
+            }
+        };
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setGravity(Gravity.CENTER_HORIZONTAL);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.gravity = Gravity.CENTER_HORIZONTAL;
+        list.setLayoutParams(lp);
+        return list;
     }
 
     private void loadFriendsIfNeeded() {
