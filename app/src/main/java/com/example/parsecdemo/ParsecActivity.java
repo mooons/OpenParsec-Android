@@ -248,6 +248,13 @@ public class ParsecActivity extends Activity {
     private void buildSessionFab() {
         List<SessionFab.Item> items = new ArrayList<>();
         items.add(new SessionFab.Item("Settings", () -> openSettings()));
+        items.add(new SessionFab.Item(
+                settings.showStats() ? "Hide performance stats" : "Show performance stats",
+                () -> {
+                    settings.showStats(!settings.showStats());
+                    syncStatsHud();
+                    rebuildSessionFab();
+                }));
         // Label reflects the CURRENT mode; tapping toggles to the other mode.
         items.add(new SessionFab.Item(
                 settings.isTouchpadMode() ? "Mouse: Touchpad" : "Mouse: Direct",
@@ -675,8 +682,7 @@ public class ParsecActivity extends Activity {
         root.addView(statsView, lp);
     }
 
-    /** Show/hide the stats HUD per the current setting. Called on connect and
-     *  when the settings panel closes. */
+    /** Show/hide the stats HUD on connect, menu toggles, and settings-panel close. */
     private void syncStatsHud() {
         if (statsView == null) return;
         statsView.setVisibility(settings.showStats() ? View.VISIBLE : View.GONE);
@@ -1371,6 +1377,7 @@ public class ParsecActivity extends Activity {
             applySettingsToSurface();
             sendHostVideoConfig();
             syncStatsHud(); // user may have toggled Show Performance Stats
+            rebuildSessionFab();
         }
     }
 
