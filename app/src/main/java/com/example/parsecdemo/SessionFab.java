@@ -126,6 +126,14 @@ public final class SessionFab {
         root.removeView(fab);
     }
 
+    public void reclampPosition() {
+        hideMenu();
+        float maxX = Math.max(0, root.getWidth() - fab.getWidth());
+        float maxY = Math.max(0, root.getHeight() - fab.getHeight());
+        fab.setX(Math.max(0, Math.min(fab.getX(), maxX)));
+        fab.setY(Math.max(0, Math.min(fab.getY(), maxY)));
+    }
+
     public void reveal() {
         setVisible(true);
         if (!menuOpen) showMenu();

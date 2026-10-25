@@ -185,8 +185,9 @@ public class ParsecActivity extends Activity {
         root.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
             int w = r - l;
             int h = b - t;
-            if (surface != null && (w != or - ol || h != ob - ot)) {
-                surface.onClientResize(w, h);
+            if (w != or - ol || h != ob - ot) {
+                if (surface != null) surface.onClientResize(w, h);
+                reclampControls();
             }
         });
 
@@ -326,6 +327,7 @@ public class ParsecActivity extends Activity {
                 Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         lp.bottomMargin = dp(16);
         root.addView(mouseButtonRow, lp);
+        mouseButtonRow.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> clampOverlay(v));
         // Restore previously-saved drag position once the row has been measured.
         mouseButtonRow.post(this::applyMouseRowSavedPosition);
         updateMouseButtonRow();
@@ -1045,6 +1047,7 @@ public class ParsecActivity extends Activity {
         lp.bottomMargin = dp(16);
         lp.rightMargin = dp(16);
         root.addView(keyboardButton, lp);
+        keyboardButton.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> clampOverlay(v));
         updateKeyboardButton();
     }
 
@@ -1151,6 +1154,7 @@ public class ParsecActivity extends Activity {
         // open.
         int liftBy = imeVisible ? imeBottomPx + barH + dp(8) : dp(16);
         if (keyboardButton != null) {
+            keyboardButton.setTranslationY(0);
             FrameLayout.LayoutParams klp = (FrameLayout.LayoutParams) keyboardButton.getLayoutParams();
             klp.bottomMargin = liftBy;
             keyboardButton.setLayoutParams(klp);
@@ -1503,8 +1507,8 @@ public class ParsecActivity extends Activity {
         // the matching release events if the gesture was interrupted by fold.
         if (imeBar != null) imeBar.clearLatchedModifiers();
         heldButtonCount = 0;
-        // Re-clamp user-positioned mouse-button row so it can't drift offscreen.
-        reclampMouseRow();
+        mouseRowImeBackupY = null;
+        reclampControls();
         // After the next layout pass, reset touch state & cursor against the
         // freshly-laid-out surface dimensions.
         root.post(() -> {
@@ -1512,41 +1516,32 @@ public class ParsecActivity extends Activity {
         });
     }
 
-    /** If the mouse-button row has a saved drag position, clamp it to the
-     *  current viewport bounds. Folding from large→small screen can leave the
-     *  saved coords entirely offscreen. */
+    private void clampOverlay(View control) {
+        if (control == null || root.getWidth() <= 0 || root.getHeight() <= 0) return;
+        control.setX(Math.max(0, Math.min(control.getX(), root.getWidth() - control.getWidth())));
+        control.setY(Math.max(0, Math.min(control.getY(), root.getHeight() - control.getHeight())));
+    }
+
+    private void reclampControls() {
+        if (fab != null) fab.reclampPosition();
+        reclampMouseRow();
+        clampOverlay(keyboardButton);
+    }
+
+    /** Run against actual layout bounds; a posted configuration callback can precede layout. */
     private void reclampMouseRow() {
         if (mouseButtonRow == null) return;
         float sx = settings.mouseRowX();
         float sy = settings.mouseRowY();
-        if (sx < 0 || sy < 0) return; // never dragged
-        int rw = root.getWidth();
-        int rh = root.getHeight();
-        int rowW = mouseButtonRow.getWidth();
-        int rowH = mouseButtonRow.getHeight();
-        if (rw <= 0 || rh <= 0 || rowW <= 0 || rowH <= 0) return;
-        // If the row would be more than half offscreen, snap it back to the
-        // default bottom-center placement and forget the saved position.
-        float maxX = Math.max(0, rw - rowW);
-        float maxY = Math.max(0, rh - rowH);
-        boolean wayOff = sx > rw - rowW / 2f || sy > rh - rowH / 2f
-                || sx + rowW / 2f < 0 || sy + rowH / 2f < 0;
-        if (wayOff) {
-            settings.resetMouseRowPosition();
-            mouseRowImeBackupY = null;
-            mouseButtonRow.setTranslationX(0);
-            mouseButtonRow.setTranslationY(0);
-            FrameLayout.LayoutParams mlp = (FrameLayout.LayoutParams) mouseButtonRow.getLayoutParams();
-            mlp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
-            mlp.bottomMargin = dp(16);
-            mouseButtonRow.setLayoutParams(mlp);
-            return;
+        boolean saved = sx >= 0 && sy >= 0;
+        if (saved) {
+            mouseButtonRow.setX(sx);
+            mouseButtonRow.setY(sy);
         }
-        float cx = Math.min(Math.max(0, sx), maxX);
-        float cy = Math.min(Math.max(0, sy), maxY);
-        if (cx != sx || cy != sy) settings.mouseRowPosition(cx, cy);
-        mouseButtonRow.setX(cx);
-        mouseButtonRow.setY(cy);
+        clampOverlay(mouseButtonRow);
+        if (saved && (mouseButtonRow.getX() != sx || mouseButtonRow.getY() != sy)) {
+            settings.mouseRowPosition(mouseButtonRow.getX(), mouseButtonRow.getY());
+        }
     }
 
     @Override
