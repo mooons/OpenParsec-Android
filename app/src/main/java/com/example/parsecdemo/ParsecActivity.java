@@ -292,7 +292,8 @@ public class ParsecActivity extends Activity {
         items.add(new SessionFab.Item("Reconnect", this::reconnectSession));
         items.add(new SessionFab.Item("Disconnect", true, this::finish));
 
-        fab = new SessionFab(this, root, items);
+        if (fab == null) fab = new SessionFab(this, root, items);
+        else fab.setItems(items);
         fab.setVisible(!settings.noOverlay());
     }
 
@@ -327,22 +328,10 @@ public class ParsecActivity extends Activity {
                 Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         lp.bottomMargin = dp(16);
         root.addView(mouseButtonRow, lp);
-        mouseButtonRow.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> clampOverlay(v));
+        mouseButtonRow.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> reclampMouseRow());
         // Restore previously-saved drag position once the row has been measured.
-        mouseButtonRow.post(this::applyMouseRowSavedPosition);
+        mouseButtonRow.post(this::reclampMouseRow);
         updateMouseButtonRow();
-    }
-
-    private void applyMouseRowSavedPosition() {
-        if (mouseButtonRow == null) return;
-        float sx = settings.mouseRowX();
-        float sy = settings.mouseRowY();
-        if (sx < 0 || sy < 0) return; // never dragged → leave at default bottom-center
-        // Clamp to current viewport in case rotation / fold changed the bounds.
-        float maxX = Math.max(0, root.getWidth()  - mouseButtonRow.getWidth());
-        float maxY = Math.max(0, root.getHeight() - mouseButtonRow.getHeight());
-        mouseButtonRow.setX(Math.min(Math.max(0, sx), maxX));
-        mouseButtonRow.setY(Math.min(Math.max(0, sy), maxY));
     }
 
     private void updateMouseButtonRow() {
@@ -353,8 +342,6 @@ public class ParsecActivity extends Activity {
     }
 
     private void rebuildSessionFab() {
-        if (fab != null) fab.destroy();
-        fab = null;
         buildSessionFab();
     }
 
@@ -1467,8 +1454,7 @@ public class ParsecActivity extends Activity {
             settings.resetMouseRowPosition();
             mouseRowImeBackupY = null;
             // Clear drag translation so the LayoutParams gravity takes over again.
-            mouseButtonRow.setTranslationX(0);
-            mouseButtonRow.setTranslationY(0);
+            mouseButtonRow.resetPosition();
             FrameLayout.LayoutParams mlp = (FrameLayout.LayoutParams) mouseButtonRow.getLayoutParams();
             mlp.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
             mlp.bottomMargin = dp(16);
@@ -1535,12 +1521,13 @@ public class ParsecActivity extends Activity {
         float sx = settings.mouseRowX();
         float sy = settings.mouseRowY();
         boolean saved = sx >= 0 && sy >= 0;
-        if (saved) {
-            mouseButtonRow.setX(sx);
-            mouseButtonRow.setY(sy);
-        }
+        float currentY = mouseButtonRow.getY();
+        if (saved && !mouseButtonRow.isDocked()) mouseButtonRow.restorePosition(sx, sy);
+        else mouseButtonRow.reclampPosition();
+        if (mouseRowImeBackupY != null) mouseButtonRow.setY(currentY);
         clampOverlay(mouseButtonRow);
-        if (saved && (mouseButtonRow.getX() != sx || mouseButtonRow.getY() != sy)) {
+        if (saved && mouseRowImeBackupY == null
+                && (mouseButtonRow.getX() != sx || mouseButtonRow.getY() != sy)) {
             settings.mouseRowPosition(mouseButtonRow.getX(), mouseButtonRow.getY());
         }
     }

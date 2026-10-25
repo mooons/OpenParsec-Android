@@ -21,6 +21,47 @@ import org.robolectric.annotation.Config;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 34)
 public class MouseButtonRowTest {
+    @Test public void draggingTheMouseHandleDocksItInsteadOfLeavingItInTheDesktop() {
+        try (var controller = Robolectric.buildActivity(Activity.class)) {
+            controller.get().setTheme(R.style.AppTheme);
+            Activity activity = controller.setup().get();
+            FrameLayout root = new FrameLayout(activity);
+            activity.setContentView(root);
+            float[] saved = {-1, -1};
+            MouseButtonRow row = new MouseButtonRow(activity, new MouseButtonRow.ButtonListener() {
+                @Override public void onButton(int button, boolean pressed) {}
+                @Override public void onMiddleClick() {}
+                @Override public void onScrollDelta(int x, int y) {}
+                @Override public void onRepositioned(float x, float y) { saved[0] = x; saved[1] = y; }
+            });
+            root.addView(row, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            layout(root, 800, 360);
+            row.setX(300);
+            row.setY(100);
+            View handle = row.getChildAt(0);
+            send(handle, MotionEvent.ACTION_DOWN, 20, 20);
+            send(handle, MotionEvent.ACTION_MOVE, 150, 30);
+            send(handle, MotionEvent.ACTION_UP, 150, 30);
+            assertEquals("Dropping in the right half must dock against the right edge",
+                    root.getWidth() - row.getWidth(), row.getX(), 0.5f);
+            assertEquals(row.getX(), saved[0], 0);
+            handle.performClick();
+            layout(root, 800, 360);
+            assertEquals("Expanded buttons stay anchored to the right edge",
+                    root.getWidth() - row.getWidth(), row.getX(), 0.5f);
+            handle.performClick();
+            layout(root, 800, 360);
+            assertEquals("Collapsing restores the handle to the right edge",
+                    root.getWidth() - row.getWidth(), row.getX(), 0.5f);
+            send(handle, MotionEvent.ACTION_DOWN, 20, 20);
+            send(handle, MotionEvent.ACTION_MOVE, -500, 30);
+            send(handle, MotionEvent.ACTION_CANCEL, -500, 30);
+            assertEquals("A cancelled drag must still dock on the chosen side", 0, row.getX(), 0.5f);
+            assertEquals(row.getX(), saved[0], 0);
+        }
+    }
+
     @Test public void compactRowExpandsDragsAndRetainsMouseGestures() {
         try (var controller = Robolectric.buildActivity(Activity.class)) {
             controller.get().setTheme(R.style.AppTheme);

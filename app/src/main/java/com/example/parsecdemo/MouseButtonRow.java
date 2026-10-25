@@ -43,6 +43,8 @@ public final class MouseButtonRow extends LinearLayout {
 
     private final ButtonListener listener;
     private boolean expanded;
+    private boolean docked, dockRight;
+    private float dockHeight;
 
     public MouseButtonRow(Context ctx, ButtonListener listener) {
         super(ctx);
@@ -92,8 +94,8 @@ public final class MouseButtonRow extends LinearLayout {
                 @Override public void onLayoutChange(View v, int l, int t, int r, int b,
                                                       int ol, int ot, int or, int ob) {
                     removeOnLayoutChangeListener(this);
-                    // Keep the handle in place, clamping expansion at screen edges.
-                    moveTo(x, y);
+                    if (docked) reclampPosition();
+                    else moveTo(x, y);
                 }
             });
         }
@@ -134,18 +136,51 @@ public final class MouseButtonRow extends LinearLayout {
                     return true;
                 }
                 case MotionEvent.ACTION_UP: {
-                    if (dragging) listener.onRepositioned(MouseButtonRow.this.getX(), MouseButtonRow.this.getY());
+                    if (dragging) finishDrag();
                     else v.performClick();
                     dragging = false;
                     return true;
                 }
                 case MotionEvent.ACTION_CANCEL: {
-                    if (dragging) listener.onRepositioned(MouseButtonRow.this.getX(), MouseButtonRow.this.getY());
+                    if (dragging) finishDrag();
                     dragging = false;
                     return true;
                 }
             }
             return false;
+        }
+    }
+
+    private void finishDrag() {
+        restorePosition(getX(), getY());
+        listener.onRepositioned(getX(), getY());
+    }
+
+    public boolean isDocked() { return docked; }
+
+    public void restorePosition(float x, float y) {
+        ViewGroup parent = (ViewGroup) getParent();
+        if (parent == null || parent.getWidth() <= 0 || parent.getHeight() <= 0) return;
+        docked = true;
+        dockRight = x + getWidth() / 2f >= parent.getWidth() / 2f;
+        dockHeight = Math.max(0, Math.min(1, y / Math.max(1, parent.getHeight() - getHeight())));
+        reclampPosition();
+    }
+
+    public void resetPosition() {
+        docked = false;
+        setTranslationX(0);
+        setTranslationY(0);
+    }
+
+    public void reclampPosition() {
+        ViewGroup parent = (ViewGroup) getParent();
+        if (parent == null) return;
+        if (docked) {
+            moveTo(dockRight ? parent.getWidth() - getWidth() : 0,
+                    dockHeight * Math.max(0, parent.getHeight() - getHeight()));
+        } else {
+            moveTo(getX(), getY());
         }
     }
 

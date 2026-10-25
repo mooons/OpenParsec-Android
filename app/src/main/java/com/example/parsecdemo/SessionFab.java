@@ -44,7 +44,7 @@ public final class SessionFab {
     private final Activity activity;
     private final FrameLayout root;
     private final FrameLayout fab;
-    private final List<Item> items;
+    private List<Item> items;
     private FrameLayout menu;
     private boolean menuOpen = false;
 
@@ -56,6 +56,8 @@ public final class SessionFab {
     private float downRawX, downRawY;
     private boolean dragging = false;
     private long downTimeMs;
+    private boolean dockRight = true;
+    private float dockHeight = 1f / 3;
 
     public SessionFab(Activity activity, FrameLayout root, List<Item> items) {
         this.activity = activity;
@@ -91,11 +93,7 @@ public final class SessionFab {
         lp.gravity = Gravity.TOP | Gravity.START;
         root.addView(fab, lp);
 
-        root.post(() -> {
-            int rw = root.getWidth();
-            fab.setX(rw - dp(FAB_SIZE_DP) - dp(EDGE_PAD_DP));
-            fab.setY(root.getHeight() / 3f);
-        });
+        root.post(this::resetPosition);
 
         fab.setOnTouchListener((v, ev) -> onFabTouch(ev));
     }
@@ -103,6 +101,11 @@ public final class SessionFab {
     public void setVisible(boolean visible) {
         fab.setVisibility(visible ? View.VISIBLE : View.GONE);
         if (!visible) hideMenu();
+    }
+
+    public void setItems(List<Item> items) {
+        hideMenu();
+        this.items = items;
     }
 
     /** Snap the FAB back to a known-good visible position. Used as a recovery
@@ -114,24 +117,23 @@ public final class SessionFab {
             int rw = root.getWidth();
             int rh = root.getHeight();
             if (rw <= 0 || rh <= 0) { root.post(this::resetPosition); return; }
-            fab.setX(rw - dp(FAB_SIZE_DP) - dp(EDGE_PAD_DP));
-            fab.setY(rh / 3f);
+            dockRight = true;
+            dockHeight = (rh / 3f) / Math.max(1, rh - fab.getHeight());
+            reclampPosition();
         };
         if (root.getWidth() == 0 || root.getHeight() == 0) root.post(apply);
         else apply.run();
     }
 
-    public void destroy() {
-        hideMenu();
-        root.removeView(fab);
-    }
-
     public void reclampPosition() {
         hideMenu();
+        if (root.getWidth() <= 0 || root.getHeight() <= 0) return;
         float maxX = Math.max(0, root.getWidth() - fab.getWidth());
         float maxY = Math.max(0, root.getHeight() - fab.getHeight());
-        fab.setX(Math.max(0, Math.min(fab.getX(), maxX)));
-        fab.setY(Math.max(0, Math.min(fab.getY(), maxY)));
+        float padX = Math.min(dp(EDGE_PAD_DP), maxX / 2);
+        float padY = Math.min(dp(EDGE_PAD_DP), maxY / 2);
+        fab.setX(dockRight ? maxX - padX : padX);
+        fab.setY(Math.max(padY, Math.min(dockHeight * maxY, maxY - padY)));
     }
 
     public void reveal() {
@@ -202,12 +204,10 @@ public final class SessionFab {
 
     private void snapToNearestEdge() {
         float cx = fab.getX() + fab.getWidth() / 2f;
-        float rw = root.getWidth();
-        float target = (cx < rw / 2f) ? dp(EDGE_PAD_DP) : (rw - fab.getWidth() - dp(EDGE_PAD_DP));
-        float y = Math.max(dp(EDGE_PAD_DP),
-                Math.min(fab.getY(), root.getHeight() - fab.getHeight() - dp(EDGE_PAD_DP)));
-        fab.setX(target);
-        fab.setY(y);
+        dockRight = cx >= root.getWidth() / 2f;
+        dockHeight = Math.max(0, Math.min(1,
+                fab.getY() / Math.max(1, root.getHeight() - fab.getHeight())));
+        reclampPosition();
     }
 
     private void toggleMenu() {
