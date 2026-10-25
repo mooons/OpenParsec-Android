@@ -67,6 +67,7 @@ public class ClientGLSurface extends GLSurfaceView {
     private volatile boolean renderPaused;
     private final Choreographer.FrameCallback frameTick = this::renderTick;
     private VelocityTracker velocity;
+    private boolean touchActive;
     private final OverScroller cursorScroller;
     private boolean multipleFingers;
     private int zoomGesture;
@@ -295,6 +296,7 @@ public class ClientGLSurface extends GLSurfaceView {
     }
 
     @Override public void onPause() {
+        touchActive = false;
         if (renderPaused) return;
         renderPaused = true;
         rendering = false;
@@ -389,6 +391,7 @@ public class ClientGLSurface extends GLSurfaceView {
      *  mode, or a frozen finger position. Releases all mouse buttons on the
      *  host side, clears scroll accumulation, and re-centers the cursor. */
     public void resetTouchState() {
+        touchActive = false;
         cursorScroller.abortAnimation();
         cancelDirectPendingClick();
         if (velocity != null) { velocity.recycle(); velocity = null; }
@@ -483,6 +486,8 @@ public class ClientGLSurface extends GLSurfaceView {
         if (isMouseSource(ev)) return handleMouseTouchEvent(ev);
 
         int action = ev.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) touchActive = true;
+        else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) touchActive = false;
         if (action == MotionEvent.ACTION_DOWN) {
             cursorScroller.abortAnimation();
             multipleFingers = false;
@@ -601,6 +606,7 @@ public class ClientGLSurface extends GLSurfaceView {
         return super.onCapturedPointerEvent(event);
     }
     public boolean isRelativeMouseMode() { return relativeMouseMode; }
+    public boolean isCursorLocallyControlled() { return touchActive || !cursorScroller.isFinished(); }
 
     @Override
     public boolean onGenericMotionEvent(MotionEvent ev) {
@@ -868,14 +874,16 @@ public class ClientGLSurface extends GLSurfaceView {
                         // Parsec wheel: positive y = scroll down (SDK header).
                         sendWheel(0, scaledTick(ticks));
                     }
-                } else if (relativeMouseMode) {
-                    // Pointer-lock: emit relative deltas, host owns the cursor.
-                    sendRelativeMotion(dx, dy);
                 } else {
                     cursorX = clamp(cursorX + dx * sensitivity, 0, surfaceWidth - 1);
                     cursorY = clamp(cursorY + dy * sensitivity, 0, surfaceHeight - 1);
-                    followCursor();
-                    sendAbsoluteMotionMapped(cursorX, cursorY);
+                    if (relativeMouseMode) {
+                        sendRelativeMotion(dx, dy);
+                        notifyCursor(false);
+                    } else {
+                        followCursor();
+                        sendAbsoluteMotionMapped(cursorX, cursorY);
+                    }
                 }
                 return true;
             }

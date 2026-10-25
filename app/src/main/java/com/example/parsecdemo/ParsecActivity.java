@@ -577,7 +577,9 @@ public class ParsecActivity extends Activity {
                         ? parsec.clientGetCursorPng() : null;
             }
             if (cursor != null && cursor.length >= 9) {
-                if (surface != null && cursor[1] != 0)
+                // SDK positions describe reappearance after pointer lock, not ongoing touchpad motion.
+                if (surface != null && cursor[1] != 0 && lastRelativeMode && !rel
+                        && !surface.isCursorLocallyControlled())
                     surface.restoreCursor(cursor[3], cursor[4]);
                 if (png != null && cursorView != null) {
                     int w = cursor[5], h = cursor[6];

@@ -129,11 +129,55 @@ public class CursorRenderingTest {
         }
     }
 
+    @Test public void hostCursorFeedbackDoesNotInterruptATouchpadCircle() {
+        Intent intent = new Intent()
+                .putExtra(LoginActivity.EXTRA_SESSION_ID, "test-session")
+                .putExtra(HostListActivity.EXTRA_PEER_ID, "test-peer");
+        try (var controller = Robolectric.buildActivity(ParsecActivity.class, intent).setup()) {
+            ParsecActivity activity = controller.get();
+            ClientGLSurface surface = getField(activity, "surface");
+            View cursor = getField(activity, "cursorView");
+            ShadowParsec sdk = org.robolectric.shadow.api.Shadow.extract((Parsec) getField(activity, "parsec"));
+            surface.onClientResize(1600, 1000);
+            surface.setSensitivity(1);
+            surface.setTrackpadMode(true);
+            shadowOf(Looper.getMainLooper()).idle();
+            float startX = cursor.getTranslationX();
+            float startY = cursor.getTranslationY();
+            MotionEvent down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 680, 300, 0);
+            surface.onTouchEvent(down);
+            down.recycle();
+            for (int i = 1; i <= 24; i++) {
+                double angle = i * Math.PI / 12;
+                float x = 600 + 80 * (float) Math.cos(angle);
+                float y = 300 + 80 * (float) Math.sin(angle);
+                MotionEvent move = MotionEvent.obtain(0, i * 16, MotionEvent.ACTION_MOVE, x, y, 0);
+                surface.onTouchEvent(move);
+                move.recycle();
+                assertEquals("relative input at step " + i, i == 7, sdk.motionRelative);
+                if (i % 6 == 0 || i == 7) {
+                    // Repeated absolute-mode events can carry old reappearance coordinates.
+                    // macOS can also briefly report relative mode during the stroke.
+                    sdk.relative = i == 6;
+                    sdk.cursor = new int[] {sdk.relative ? 1 : 0, 1, 0, 40, 60, 0, 0, 0, 0};
+                    callInstanceMethod(activity, "tickIoPump");
+                }
+                shadowOf(Looper.getMainLooper()).idle();
+                assertEquals("circle x at step " + i, startX + x - 680, cursor.getTranslationX(), 0.01);
+                assertEquals("circle y at step " + i, startY + y - 300, cursor.getTranslationY(), 0.01);
+            }
+            MotionEvent up = MotionEvent.obtain(0, 400, MotionEvent.ACTION_UP, 680, 300, 0);
+            surface.onTouchEvent(up);
+            up.recycle();
+        }
+    }
+
     @Implements(value = Parsec.class, isInAndroidSdk = false, callThroughByDefault = false)
     public static class ShadowParsec {
         int[] cursor;
         byte[] png;
         boolean relative;
+        boolean motionRelative;
 
         @Implementation protected static void __staticInitializer__() {}
         @Implementation protected int[] clientPollCursor() {
@@ -143,6 +187,10 @@ public class CursorRenderingTest {
         }
         @Implementation protected byte[] clientGetCursorPng() { return png; }
         @Implementation protected boolean clientGetCursorRelative() { return relative; }
+        @Implementation protected int clientSendMouseMotion(boolean relative, int x, int y) {
+            motionRelative = relative;
+            return 0;
+        }
         @Implementation protected int clientPollRumble() { return -1; }
     }
 
