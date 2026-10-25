@@ -572,20 +572,33 @@ public class ParsecActivity extends Activity {
 
         // --- Cursor mode and host cursor image ---
         try {
-            boolean rel = parsec.clientGetCursorRelative();
-            int[] cursor = parsec.clientPollCursor();
+            boolean rel;
+            int[] cursor;
+            byte[] png;
+            synchronized (parsec) {
+                rel = parsec.clientGetCursorRelative();
+                cursor = parsec.clientPollCursor();
+                png = cursor != null && cursor.length >= 9 && cursor[2] != 0
+                        ? parsec.clientGetCursorPng() : null;
+            }
             if (cursor != null && cursor.length >= 9) {
                 if (surface != null && cursor[1] != 0)
                     surface.restoreCursor(cursor[3], cursor[4]);
-                if (cursor[2] != 0 && cursor.length > 9) {
+                if (png != null && cursorView != null) {
                     int w = cursor[5], h = cursor[6];
-                    Bitmap bitmap = Bitmap.createBitmap(cursor, 9, w, w, h, Bitmap.Config.ARGB_8888);
-                    if (cursorView != null) {
+                    BitmapFactory.Options bounds = new BitmapFactory.Options();
+                    bounds.inJustDecodeBounds = true;
+                    BitmapFactory.decodeByteArray(png, 0, png.length, bounds);
+                    Bitmap bitmap = w > 0 && h > 0 && (long) w * h <= 1024 * 1024
+                            && bounds.outWidth == w && bounds.outHeight == h
+                            ? BitmapFactory.decodeByteArray(png, 0, png.length) : null;
+                    if (bitmap != null) {
                         cursorView.setBackground(new BitmapDrawable(getResources(), bitmap));
                         ViewGroup.LayoutParams lp = cursorView.getLayoutParams();
                         lp.width = Math.max(1, Math.round(w * settings.cursorScale()));
                         lp.height = Math.max(1, Math.round(h * settings.cursorScale()));
                         cursorView.setLayoutParams(lp);
+                        cursorView.setVisibility(rel ? View.GONE : View.VISIBLE);
                     }
                 }
                 if (cursorView != null && cursor[1] != 0) {
@@ -598,7 +611,7 @@ public class ParsecActivity extends Activity {
                 if (surface != null) surface.setRelativeMouseMode(rel);
                 if (rel && cursorView != null) cursorView.setVisibility(View.GONE);
             }
-        } catch (Throwable ignored) {}
+        } catch (RuntimeException error) { Log.w("ParsecCursor", "Couldn't update cursor", error); }
 
         // --- Host video/display user-data ---
         try {

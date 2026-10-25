@@ -61,8 +61,10 @@ public class Parsec {
     public synchronized native boolean clientGetCursorRelative();
     /** Packed (motorBig<<8 | motorSmall) if a new rumble is pending, else -1. */
     public synchronized native int clientPollRumble();
-    /** relative, modeChanged, imageChanged, x, y, width, height, hotX, hotY, then ARGB pixels. */
+    /** relative, modeChanged, imageChanged, x, y, width, height, hotX, hotY.
+     *  Hold this instance's monitor while polling metadata and its PNG image. */
     public synchronized native int[] clientPollCursor();
+    public synchronized native byte[] clientGetCursorPng();
     public synchronized native byte[] clientPollUserData(int id);
     private synchronized native int clientSendUserDataBytes(int id, byte[] utf8);
 

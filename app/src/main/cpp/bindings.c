@@ -24,8 +24,8 @@ struct client_state {
     char *user_data[2];
     ParsecCursor cursor;
     int cursor_flags;
-    jint *cursor_pixels;
-    size_t cursor_count;
+    uint8_t *cursor_png;
+    size_t cursor_size;
 };
 
 static void *getPointer(JNIEnv *env, jobject instance, const char *name)
@@ -111,7 +111,7 @@ Java_parsec_bindings_Parsec_destroy(JNIEnv *env, jobject instance)
     aaudio_destroy(&s->audio);
     free(s->user_data[0]);
     free(s->user_data[1]);
-    free(s->cursor_pixels);
+    free(s->cursor_png);
     free(s);
     setPointer(env, instance, "state", NULL);
     setPointer(env, instance, "parsec", NULL);
@@ -132,7 +132,8 @@ Java_parsec_bindings_Parsec_clientConnect(JNIEnv *env, jobject instance, jstring
     cfg.resolutionX = resolutionX;
     cfg.resolutionY = resolutionY;
     cfg.refreshRate = refreshRate;
-    cfg.pngCursor = false;
+    // The bundled SDK's raw RGBA conversion returns blank images on current hosts.
+    cfg.pngCursor = true;
     ParsecStatus rc = ParsecClientConnect(s->parsec, &cfg, (char *) session, (char *) peer);
     (*env)->ReleaseStringUTFChars(env, sessionID, session);
     (*env)->ReleaseStringUTFChars(env, peerID, peer);
@@ -373,17 +374,14 @@ Java_parsec_bindings_Parsec_clientPollEvents(JNIEnv *env, jobject instance)
             if (c.imageUpdate) {
                 void *buffer = ParsecGetBuffer(s->parsec, e.cursor.key);
                 size_t count = (size_t) c.width * c.height;
-                if (count <= MAX_CURSOR_PIXELS && c.size >= count * 4 && (!count || buffer)) {
-                    jint *pixels = count ? malloc(count * sizeof(jint)) : NULL;
-                    if (!count || pixels) {
-                        const uint8_t *rgba = buffer;
-                        for (size_t i = 0; i < count; i++) {
-                            pixels[i] = (jint) ((uint32_t) rgba[i*4+3] << 24 | rgba[i*4] << 16
-                                              | rgba[i*4+1] << 8 | rgba[i*4+2]);
-                        }
-                        free(s->cursor_pixels);
-                        s->cursor_pixels = pixels;
-                        s->cursor_count = count;
+                if (count > 0 && count <= MAX_CURSOR_PIXELS
+                        && c.size > 0 && c.size <= MAX_CURSOR_PIXELS * 4 && buffer) {
+                    uint8_t *png = malloc(c.size);
+                    if (png) {
+                        memcpy(png, buffer, c.size);
+                        free(s->cursor_png);
+                        s->cursor_png = png;
+                        s->cursor_size = c.size;
                         s->cursor.width = c.width;
                         s->cursor.height = c.height;
                         s->cursor.hotX = c.hotX < c.width ? c.hotX : 0;
@@ -422,15 +420,23 @@ Java_parsec_bindings_Parsec_clientPollCursor(JNIEnv *env, jobject instance)
 {
     struct client_state *s = getPointer(env, instance, "state");
     if (!s || !s->cursor_flags) return NULL;
-    bool image = (s->cursor_flags & 2) != 0;
-    jint header[] = {s->relative, s->cursor_flags & 1, image,
+    jint header[] = {s->relative, s->cursor_flags & 1, (s->cursor_flags & 2) != 0,
         (jint) s->cursor.positionX, (jint) s->cursor.positionY,
         s->cursor.width, s->cursor.height, s->cursor.hotX, s->cursor.hotY};
-    jintArray result = (*env)->NewIntArray(env, 9 + (image ? s->cursor_count : 0));
+    jintArray result = (*env)->NewIntArray(env, 9);
     if (!result) return NULL;
     (*env)->SetIntArrayRegion(env, result, 0, 9, header);
-    if (image && s->cursor_count) (*env)->SetIntArrayRegion(env, result, 9, s->cursor_count, s->cursor_pixels);
     s->cursor_flags = 0;
+    return result;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_parsec_bindings_Parsec_clientGetCursorPng(JNIEnv *env, jobject instance)
+{
+    struct client_state *s = getPointer(env, instance, "state");
+    if (!s || !s->cursor_png) return NULL;
+    jbyteArray result = (*env)->NewByteArray(env, s->cursor_size);
+    if (result) (*env)->SetByteArrayRegion(env, result, 0, s->cursor_size, (jbyte *) s->cursor_png);
     return result;
 }
 

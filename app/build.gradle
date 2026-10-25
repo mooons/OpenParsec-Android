@@ -20,6 +20,9 @@ android {
     buildFeatures {
         buildConfig true
     }
+    testOptions {
+        unitTests.includeAndroidResources = true
+    }
     signingConfigs {
         release {
             // Stable shared keystore committed at the repo root so every
