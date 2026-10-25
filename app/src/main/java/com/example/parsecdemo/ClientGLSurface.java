@@ -193,7 +193,7 @@ public class ClientGLSurface extends GLSurfaceView {
         setScaleY(zoom);
         setTranslationX(panX);
         setTranslationY(panY);
-        notifyCursor(trackpadMode && !relativeMouseMode);
+        notifyCursor(!relativeMouseMode);
     }
 
     /** Clamp pan so the scaled surface can't be dragged completely off the
@@ -261,11 +261,9 @@ public class ClientGLSurface extends GLSurfaceView {
                 cursorX = surfaceWidth / 2f;
                 cursorY = surfaceHeight / 2f;
                 sendAbsoluteMotionMapped(cursorX, cursorY);
-                notifyCursor(true);
             }
-        } else {
-            notifyCursor(false);
         }
+        notifyCursor(!relativeMouseMode);
     }
 
     public boolean isTrackpadMode() { return trackpadMode; }
@@ -383,7 +381,7 @@ public class ClientGLSurface extends GLSurfaceView {
         // Re-center cursor to the new viewport
         cursorX = width / 2f;
         cursorY = height / 2f;
-        if (trackpadMode) notifyCursor(true);
+        notifyCursor(!relativeMouseMode);
     }
 
     /** Wipe transient input state so a fold/unfold (which can drop touch events
@@ -423,7 +421,6 @@ public class ClientGLSurface extends GLSurfaceView {
             cursorY = surfaceHeight / 2f;
             if (trackpadMode) {
                 sendAbsoluteMotionMapped(cursorX, cursorY);
-                notifyCursor(true);
             }
         }
     }
@@ -446,7 +443,7 @@ public class ClientGLSurface extends GLSurfaceView {
                 synchronized (parsecLock) {
                     if (parsecAlive && parsec != null) parsec.clientSetDimensions(width, height);
                 }
-                if (trackpadMode) notifyCursor(true);
+                notifyCursor(!relativeMouseMode);
             }
             @Override public void onDrawFrame(GL10 gl10) {
                 synchronized (parsecLock) {
@@ -546,7 +543,6 @@ public class ClientGLSurface extends GLSurfaceView {
         cursorY = cursorScroller.getCurrY();
         followCursor();
         sendAbsoluteMotionMapped(cursorX, cursorY);
-        notifyCursor(true);
         postOnAnimation(this::stepCursorMomentum);
     }
 
@@ -591,12 +587,13 @@ public class ClientGLSurface extends GLSurfaceView {
         cursorScroller.abortAnimation();
         if (on && isAttachedToWindow() && hasWindowFocus()) requestPointerCapture();
         else if (!on && hasPointerCapture()) releasePointerCapture();
+        notifyCursor(!on);
     }
 
     public void restoreCursor(float x, float y) {
         cursorX = clamp(x, 0, Math.max(0, surfaceWidth - 1));
         cursorY = clamp(y, 0, Math.max(0, surfaceHeight - 1));
-        notifyCursor(trackpadMode && !relativeMouseMode);
+        notifyCursor(!relativeMouseMode);
     }
 
     @Override public boolean onCapturedPointerEvent(MotionEvent event) {
@@ -844,7 +841,6 @@ public class ClientGLSurface extends GLSurfaceView {
                 cursorX = gestureStartCursorX;
                 cursorY = gestureStartCursorY;
                 sendAbsoluteMotionMapped(cursorX, cursorY);
-                notifyCursor(true);
                 beginTwoFingerScroll(ev);
                 return true;
             }
@@ -880,7 +876,6 @@ public class ClientGLSurface extends GLSurfaceView {
                     cursorY = clamp(cursorY + dy * sensitivity, 0, surfaceHeight - 1);
                     followCursor();
                     sendAbsoluteMotionMapped(cursorX, cursorY);
-                    notifyCursor(true);
                 }
                 return true;
             }
@@ -1025,9 +1020,10 @@ public class ClientGLSurface extends GLSurfaceView {
     private void sendAbsoluteMotionMapped(float clientX, float clientY) {
         int w = surfaceWidth > 0 ? surfaceWidth : 1;
         int h = surfaceHeight > 0 ? surfaceHeight : 1;
-        int ix = (int) clamp(clientX, 0, w - 1);
-        int iy = (int) clamp(clientY, 0, h - 1);
-        sendAbsoluteMotion(ix, iy);
+        cursorX = clamp(clientX, 0, w - 1);
+        cursorY = clamp(clientY, 0, h - 1);
+        sendAbsoluteMotion((int) cursorX, (int) cursorY);
+        notifyCursor(!relativeMouseMode);
     }
 
     private void sendAbsoluteMotion(int x, int y) {
@@ -1055,7 +1051,7 @@ public class ClientGLSurface extends GLSurfaceView {
         post(new Runnable() {
             @Override public void run() {
                 if (trackpadListener != null) trackpadListener.onTrackpadCursorChanged(
-                        getX() + x * zoom, getY() + y * zoom, visible);
+                        getX() + x * zoom, getY() + y * zoom, visible && !relativeMouseMode);
             }
         });
     }

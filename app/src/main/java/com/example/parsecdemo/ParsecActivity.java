@@ -56,6 +56,9 @@ public class ParsecActivity extends Activity {
     private ClientGLSurface surface;
     private TextView statusView;
     private View cursorView;
+    private Bitmap cursorBitmap;
+    private int cursorHotX, cursorHotY;
+    private float cursorScreenX, cursorScreenY;
     private FrameLayout root;
     private FrameLayout debugGrid;
     private SessionFab fab;
@@ -213,15 +216,7 @@ public class ParsecActivity extends Activity {
             surface = new ClientGLSurface(getApplicationContext());
             surface.setParsec(parsec);
             applySettingsToSurface();
-            surface.setTrackpadListener((x, y, visible) -> {
-                if (cursorView == null) return;
-                if (!visible) { cursorView.setVisibility(View.GONE); return; }
-                int size = cursorView.getWidth();
-                if (size == 0) size = cursorSizePx();
-                cursorView.setTranslationX(x - size / 2f);
-                cursorView.setTranslationY(y - size / 2f);
-                cursorView.setVisibility(View.VISIBLE);
-            });
+            surface.setTrackpadListener(this::updateCursor);
             root.addView(surface, 0, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             surface.renderInit();
@@ -593,17 +588,13 @@ public class ParsecActivity extends Activity {
                             && bounds.outWidth == w && bounds.outHeight == h
                             ? BitmapFactory.decodeByteArray(png, 0, png.length) : null;
                     if (bitmap != null) {
+                        cursorBitmap = bitmap;
+                        cursorHotX = cursor[7];
+                        cursorHotY = cursor[8];
                         cursorView.setBackground(new BitmapDrawable(getResources(), bitmap));
-                        ViewGroup.LayoutParams lp = cursorView.getLayoutParams();
-                        lp.width = Math.max(1, Math.round(w * settings.cursorScale()));
-                        lp.height = Math.max(1, Math.round(h * settings.cursorScale()));
-                        cursorView.setLayoutParams(lp);
-                        cursorView.setVisibility(rel ? View.GONE : View.VISIBLE);
+                        resizeCursor();
+                        updateCursor(cursorScreenX, cursorScreenY, !rel);
                     }
-                }
-                if (cursorView != null && cursor[1] != 0) {
-                    cursorView.setTranslationX(cursor[3] - cursor[7]);
-                    cursorView.setTranslationY(cursor[4] - cursor[8]);
                 }
             }
             if (rel != lastRelativeMode) {
@@ -808,15 +799,7 @@ public class ParsecActivity extends Activity {
         surface = new ClientGLSurface(getApplicationContext());
         surface.setParsec(parsec);
         applySettingsToSurface();
-        surface.setTrackpadListener((x, y, visible) -> {
-            if (cursorView == null) return;
-            if (!visible) { cursorView.setVisibility(View.GONE); return; }
-            int size = cursorView.getWidth();
-            if (size == 0) size = cursorSizePx();
-            cursorView.setTranslationX(x - size / 2f);
-            cursorView.setTranslationY(y - size / 2f);
-            cursorView.setVisibility(View.VISIBLE);
-        });
+        surface.setTrackpadListener(this::updateCursor);
         root.addView(surface, 0, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         surface.renderInit();
@@ -892,15 +875,7 @@ public class ParsecActivity extends Activity {
                     // Defensive: rebuild the surface only if it's truly gone
                     // (e.g. shutdown raced an early activity teardown).
                     surface = new ClientGLSurface(getApplicationContext());
-                    surface.setTrackpadListener((x, y, visible) -> {
-                        if (cursorView == null) return;
-                        if (!visible) { cursorView.setVisibility(View.GONE); return; }
-                        int size = cursorView.getWidth();
-                        if (size == 0) size = cursorSizePx();
-                        cursorView.setTranslationX(x - size / 2f);
-                        cursorView.setTranslationY(y - size / 2f);
-                        cursorView.setVisibility(View.VISIBLE);
-                    });
+                    surface.setTrackpadListener(this::updateCursor);
                     root.addView(surface, 0, new FrameLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
                     surface.renderInit();
@@ -1287,6 +1262,27 @@ public class ParsecActivity extends Activity {
         return Math.max(dp(8), Math.round(dp(18) * settings.cursorScale()));
     }
 
+    private void resizeCursor() {
+        if (cursorView == null) return;
+        ViewGroup.LayoutParams lp = cursorView.getLayoutParams();
+        float scale = settings.cursorScale();
+        lp.width = cursorBitmap == null ? cursorSizePx() : Math.max(1, Math.round(cursorBitmap.getWidth() * scale));
+        lp.height = cursorBitmap == null ? cursorSizePx() : Math.max(1, Math.round(cursorBitmap.getHeight() * scale));
+        cursorView.setLayoutParams(lp);
+    }
+
+    private void updateCursor(float x, float y, boolean visible) {
+        cursorScreenX = x;
+        cursorScreenY = y;
+        if (cursorView == null) return;
+        float scale = settings.cursorScale();
+        float hotX = cursorBitmap == null ? cursorSizePx() / 2f : cursorHotX * scale;
+        float hotY = cursorBitmap == null ? cursorSizePx() / 2f : cursorHotY * scale;
+        cursorView.setTranslationX(x - hotX);
+        cursorView.setTranslationY(y - hotY);
+        cursorView.setVisibility(visible ? View.VISIBLE : View.GONE);
+    }
+
     /** Apply the user's orientation preference (auto / landscape / portrait)
      *  via setRequestedOrientation. Re-callable from Settings → applies live. */
     private void applyOrientationFromSettings() {
@@ -1349,14 +1345,8 @@ public class ParsecActivity extends Activity {
         surface.setPreferredFps(settings.preferredFps());
         surface.setZoomEnabled(settings.zoomEnabled());
         surface.setHostDimensions(settings.hostWidth(), settings.hostHeight());
-        if (cursorView != null) {
-            int sz = cursorSizePx();
-            ViewGroup.LayoutParams lp = cursorView.getLayoutParams();
-            if (lp != null) {
-                lp.width = sz; lp.height = sz;
-                cursorView.setLayoutParams(lp);
-            }
-        }
+        resizeCursor();
+        updateCursor(cursorScreenX, cursorScreenY, !surface.isRelativeMouseMode());
         if (fab != null) fab.setVisible(!settings.noOverlay());
         updateMouseButtonRow();
         updateKeyboardButton();
