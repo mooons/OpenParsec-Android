@@ -1,15 +1,16 @@
 package com.example.parsecdemo;
 
 import android.content.Context;
-import android.graphics.Canvas;
-import android.graphics.Paint;
+import android.content.res.ColorStateList;
 import android.graphics.drawable.GradientDrawable;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewConfiguration;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -19,8 +20,8 @@ import android.widget.TextView;
  *   • Middle — press-and-hold to engage scroll mode; vertical drag scrolls
  *   • Right  — press-and-hold for right click+drag (or quick tap for right click)
  *
- * The leading drag handle (six-dot grip) lets the user pick the row up and
- * place it anywhere on the screen. Position is persisted via {@link Settings}.
+ * Tap the mouse handle to expand/collapse the buttons; drag it to move the row.
+ * Position is persisted via {@link Settings}.
  */
 public final class MouseButtonRow extends LinearLayout {
 
@@ -41,6 +42,7 @@ public final class MouseButtonRow extends LinearLayout {
     static final int MOUSE_RIGHT = 3;
 
     private final ButtonListener listener;
+    private boolean expanded;
 
     public MouseButtonRow(Context ctx, ButtonListener listener) {
         super(ctx);
@@ -57,50 +59,52 @@ public final class MouseButtonRow extends LinearLayout {
         bg.setColor((container & 0x00FFFFFF) | 0xD9000000);
         bg.setCornerRadius(dp(28));
         setBackground(bg);
-        int hp = dp(8);
-        int vp = dp(6);
-        setPadding(hp, vp, hp, vp);
-
         addView(makeDragHandle(ctx));
         addView(makeButton(ctx, "L", MOUSE_LEFT,   false));
-        addView(divider(ctx));
         addView(makeButton(ctx, "M", MOUSE_MIDDLE, true));
-        addView(divider(ctx));
         addView(makeButton(ctx, "R", MOUSE_RIGHT,  false));
+        setExpanded(false);
     }
 
     private View makeDragHandle(Context ctx) {
-        DotGrip grip = new DotGrip(ctx);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(20), dp(36));
-        lp.leftMargin = dp(2);
-        lp.rightMargin = dp(6);
-        grip.setLayoutParams(lp);
+        ImageButton grip = new ImageButton(ctx);
+        grip.setImageResource(R.drawable.ic_mouse);
+        grip.setImageTintList(ColorStateList.valueOf(MaterialUi.color(ctx,
+                com.google.android.material.R.attr.colorOnSurface)));
+        TypedValue ripple = new TypedValue();
+        ctx.getTheme().resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, ripple, true);
+        grip.setBackgroundResource(ripple.resourceId);
+        grip.setPadding(dp(12), dp(12), dp(12), dp(12));
+        grip.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48)));
+        grip.setOnClickListener(v -> setExpanded(!expanded));
         grip.setOnTouchListener(new DragTouchListener());
         return grip;
     }
 
-    /** Six-dot drag-handle (two columns × three rows) rendered with Canvas. */
-    private final class DotGrip extends View {
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        DotGrip(Context ctx) {
-            super(ctx);
-            paint.setColor(MaterialUi.color(ctx,
-                    com.google.android.material.R.attr.colorOnSurfaceVariant));
+    private void setExpanded(boolean expand) {
+        // Keep held buttons visible until their matching release reaches the host.
+        for (int i = 1; i < getChildCount(); i++) {
+            if (getChildAt(i).isPressed()) return;
         }
-        @Override protected void onDraw(Canvas c) {
-            int w = getWidth();
-            int h = getHeight();
-            float dotR = dp(2);
-            float colGap = w / 2f;
-            float rowGap = h / 4f;
-            for (int col = 0; col < 2; col++) {
-                float cx = colGap * (col + 0.5f);
-                for (int row = 0; row < 3; row++) {
-                    float cy = rowGap * (row + 1);
-                    c.drawCircle(cx, cy, dotR, paint);
+        if (isLaidOut()) {
+            float x = getX(), y = getY();
+            addOnLayoutChangeListener(new OnLayoutChangeListener() {
+                @Override public void onLayoutChange(View v, int l, int t, int r, int b,
+                                                      int ol, int ot, int or, int ob) {
+                    removeOnLayoutChangeListener(this);
+                    // Keep the handle in place, clamping expansion at screen edges.
+                    moveTo(x, y);
                 }
-            }
+            });
         }
+        expanded = expand;
+        for (int i = 1; i < getChildCount(); i++) {
+            getChildAt(i).setVisibility(expand ? VISIBLE : GONE);
+        }
+        View handle = getChildAt(0);
+        String action = expand ? "Hide mouse buttons" : "Show mouse buttons";
+        handle.setContentDescription(action);
+        handle.setTooltipText(action + "; drag to move");
     }
 
     /** Touch handler that lets the user pick up the whole row and drop it
@@ -110,6 +114,7 @@ public final class MouseButtonRow extends LinearLayout {
         private float startTouchX, startTouchY;
         private float startRowX, startRowY;
         private boolean dragging;
+        private final int touchSlop = ViewConfiguration.get(getContext()).getScaledTouchSlop();
 
         @Override public boolean onTouch(View v, MotionEvent ev) {
             switch (ev.getActionMasked()) {
@@ -118,38 +123,39 @@ public final class MouseButtonRow extends LinearLayout {
                     startTouchY = ev.getRawY();
                     startRowX = MouseButtonRow.this.getX();
                     startRowY = MouseButtonRow.this.getY();
-                    dragging = true;
+                    dragging = false;
                     return true;
                 }
                 case MotionEvent.ACTION_MOVE: {
-                    if (!dragging) return false;
                     float dx = ev.getRawX() - startTouchX;
                     float dy = ev.getRawY() - startTouchY;
-                    moveTo(startRowX + dx, startRowY + dy);
+                    if (dx * dx + dy * dy > touchSlop * touchSlop) dragging = true;
+                    if (dragging) moveTo(startRowX + dx, startRowY + dy);
                     return true;
                 }
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL: {
-                    if (!dragging) return false;
+                case MotionEvent.ACTION_UP: {
+                    if (dragging) listener.onRepositioned(MouseButtonRow.this.getX(), MouseButtonRow.this.getY());
+                    else v.performClick();
                     dragging = false;
-                    listener.onRepositioned(MouseButtonRow.this.getX(), MouseButtonRow.this.getY());
+                    return true;
+                }
+                case MotionEvent.ACTION_CANCEL: {
+                    if (dragging) listener.onRepositioned(MouseButtonRow.this.getX(), MouseButtonRow.this.getY());
+                    dragging = false;
                     return true;
                 }
             }
             return false;
         }
+    }
 
-        private void moveTo(float x, float y) {
-            ViewGroup parent = (ViewGroup) MouseButtonRow.this.getParent();
-            if (parent == null) return;
-            // Clamp inside parent so the row can't be dragged offscreen.
-            float maxX = Math.max(0, parent.getWidth()  - MouseButtonRow.this.getWidth());
-            float maxY = Math.max(0, parent.getHeight() - MouseButtonRow.this.getHeight());
-            float clampedX = Math.min(Math.max(0, x), maxX);
-            float clampedY = Math.min(Math.max(0, y), maxY);
-            MouseButtonRow.this.setX(clampedX);
-            MouseButtonRow.this.setY(clampedY);
-        }
+    private void moveTo(float x, float y) {
+        ViewGroup parent = (ViewGroup) getParent();
+        if (parent == null) return;
+        float maxX = Math.max(0, parent.getWidth() - getWidth());
+        float maxY = Math.max(0, parent.getHeight() - getHeight());
+        setX(Math.min(Math.max(0, x), maxX));
+        setY(Math.min(Math.max(0, y), maxY));
     }
 
     private View makeButton(Context ctx, String label, final int parsecButton, final boolean scroll) {
@@ -178,10 +184,19 @@ public final class MouseButtonRow extends LinearLayout {
                 Gravity.CENTER);
         btn.addView(t, tlp);
 
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(64), dp(44));
-        lp.leftMargin = dp(4);
-        lp.rightMargin = dp(4);
-        btn.setLayoutParams(lp);
+        btn.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48)));
+        String description = scroll ? "Middle click / drag to scroll"
+                : parsecButton == MOUSE_LEFT ? "Left mouse button" : "Right mouse button";
+        btn.setContentDescription(description);
+        btn.setTooltipText(description);
+        btn.setFocusable(true);
+        btn.setOnClickListener(v -> {
+            if (scroll) listener.onMiddleClick();
+            else {
+                listener.onButton(parsecButton, true);
+                listener.onButton(parsecButton, false);
+            }
+        });
 
         if (scroll) {
             // Middle button = press-and-drag scroll wheel.
@@ -206,6 +221,7 @@ public final class MouseButtonRow extends LinearLayout {
             btn.setOnTouchListener((v, ev) -> {
                 switch (ev.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
+                        btn.setPressed(true);
                         bg.setColor(pressedBg);
                         t.setTextColor(pressedFg);
                         downAtMs[0] = System.currentTimeMillis();
@@ -230,6 +246,7 @@ public final class MouseButtonRow extends LinearLayout {
                         return true;
                     }
                     case MotionEvent.ACTION_UP:
+                        btn.setPressed(false);
                         bg.setColor(idleBg);
                         t.setTextColor(idleFg);
                         if (!hasScrolled[0]) {
@@ -238,6 +255,7 @@ public final class MouseButtonRow extends LinearLayout {
                         }
                         return true;
                     case MotionEvent.ACTION_CANCEL:
+                        btn.setPressed(false);
                         bg.setColor(idleBg);
                         t.setTextColor(idleFg);
                         return true;
@@ -248,12 +266,14 @@ public final class MouseButtonRow extends LinearLayout {
             btn.setOnTouchListener((v, ev) -> {
                 switch (ev.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
+                        btn.setPressed(true);
                         bg.setColor(pressedBg);
                         t.setTextColor(pressedFg);
                         listener.onButton(parsecButton, true);
                         return true;
                     case MotionEvent.ACTION_UP:
                     case MotionEvent.ACTION_CANCEL:
+                        btn.setPressed(false);
                         bg.setColor(idleBg);
                         t.setTextColor(idleFg);
                         listener.onButton(parsecButton, false);
@@ -269,17 +289,6 @@ public final class MouseButtonRow extends LinearLayout {
      *  and fire a middle-click after release. Above it, the user was holding
      *  to scroll and no click should fire. */
     private static final long MIDDLE_CLICK_MAX_MS = 220L;
-
-    private View divider(Context ctx) {
-        View v = new View(ctx);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(1), dp(20));
-        lp.leftMargin = dp(2);
-        lp.rightMargin = dp(2);
-        v.setLayoutParams(lp);
-        v.setBackgroundColor(MaterialUi.color(ctx,
-                com.google.android.material.R.attr.colorOutlineVariant));
-        return v;
-    }
 
     private int dp(int v) {
         return Math.round(v * getResources().getDisplayMetrics().density);
