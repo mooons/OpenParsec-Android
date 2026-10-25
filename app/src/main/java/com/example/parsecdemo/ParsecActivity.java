@@ -1351,6 +1351,7 @@ public class ParsecActivity extends Activity {
         if (surface == null) return;
         surface.setTrackpadMode(settings.isTouchpadMode());
         surface.setSensitivity(settings.mouseSensitivity());
+        surface.setLiftOffProtection(settings.liftOffProtection());
         surface.setScrollSensitivity(settings.scrollSensitivity());
         surface.setReverseScroll(settings.reverseScroll());
         surface.setRightClickPosition(settings.rightClickPosition());

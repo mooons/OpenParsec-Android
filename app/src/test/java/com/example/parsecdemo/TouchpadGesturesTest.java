@@ -60,6 +60,135 @@ public class TouchpadGesturesTest {
         assertFalse(surface.isCursorLocallyControlled());
     }
 
+    @Test @Config(qualifiers = "420dpi")
+    public void capturedPixelLiftTailsDoNotDisplaceThePlacedCursor() {
+        // Anonymized Pixel 7 Pro samples: ms since the last settled MOVE, x/y offsets.
+        // Each final row is UP. Pressure stayed nearly constant in several captures.
+        double[][][] tails = {
+                {{549, .474, -.75}, {557, 1.875, -.75}, {571, 1.5, -.75}},
+                {{232, 1.249, -.499}, {240, 3.211, -1.74}, {256, 10.5, -2.25}, {260, 10.5, -2.25}},
+                {{401, 9.75, 1.5}, {405, 9.75, 1.5}},
+                {{146, 4.732, 0}, {156, 9.75, -1.5}, {160, 9.75, -1.5}},
+                {{96, .75, 0}, {113, .75, 0}},
+                {{162, 1.913, 0}, {164, 2.25, 0}, {176, 2.25, 0}},
+                {{357, 0, -.75}, {413, .961, 0}, {420, 2.25, 1.5}, {428, 2.25, 1.5}},
+                {{85, 1.601, 0}, {93, 2.312, -.75}, {99, 3.375, -.75}, {121, 3, -.75}},
+                {{367, 1.6162, -.4912}, {375, 2.5781, -.75}, {384, 4.0869, -.75},
+                        {384, 4.125, -.75}, {396, 4.125, -.75}}
+        };
+        for (int n = 0; n < tails.length; n++) {
+            surface.resetTouchState();
+            sdk.buttons.clear();
+            touch(1000, MotionEvent.ACTION_DOWN, 100, 200);
+            waitMs(40);
+            touch(1040, MotionEvent.ACTION_MOVE, 150, 200);
+            int previous = 0;
+            for (int i = 0; i < tails[n].length; i++) {
+                double[] sample = tails[n][i];
+                int elapsed = (int) sample[0];
+                waitMs(elapsed - previous);
+                touch(1040 + elapsed, i == tails[n].length - 1 ? MotionEvent.ACTION_UP : MotionEvent.ACTION_MOVE,
+                        150 + (float) sample[1], 200 + (float) sample[2]);
+                previous = elapsed;
+            }
+            waitMs(60);
+            assertEquals("Captured tail " + (n + 1) + " must not move x on lift", 850, sdk.mouseX);
+            // Capture 7 includes an earlier correction held long enough to be displayed.
+            assertEquals("Captured tail " + (n + 1) + " must keep the displayed y", n == 6 ? 499 : 500, sdk.mouseY);
+            assertTrue("Protection must not create a click", sdk.buttons.isEmpty());
+        }
+    }
+
+    @Test public void continuousSinglePixelCorrectionsRemainImmediate() {
+        touch(1000, MotionEvent.ACTION_DOWN, 100, 200);
+        for (int i = 1; i <= 20; i++) {
+            touch(1000 + 8 * i, MotionEvent.ACTION_MOVE, 100 + i, 200);
+            assertEquals(800 + i, sdk.mouseX);
+        }
+        for (int i = 1; i <= 20; i++) {
+            touch(1160 + 8 * i, MotionEvent.ACTION_MOVE, 120 - i, 200);
+            assertEquals(820 - i, sdk.mouseX);
+        }
+        touch(1330, MotionEvent.ACTION_UP, 100, 200);
+    }
+
+    @Test public void tinyCorrectionsAfterAPauseAreCommittedIfContactContinues() {
+        touch(1000, MotionEvent.ACTION_DOWN, 100, 200);
+        touch(1040, MotionEvent.ACTION_MOVE, 150, 200);
+        touch(1140, MotionEvent.ACTION_MOVE, 151, 200);
+        assertEquals(850, sdk.mouseX);
+        waitMs(39);
+        assertEquals(850, sdk.mouseX);
+        waitMs(2);
+        assertEquals("An intentional one-pixel correction must not be swallowed", 851, sdk.mouseX);
+        touch(1182, MotionEvent.ACTION_MOVE, 150, 200);
+        waitMs(41);
+        assertEquals("A one-pixel reversal must also be preserved", 850, sdk.mouseX);
+        touch(1230, MotionEvent.ACTION_UP, 150, 200);
+    }
+
+    @Test public void largerResumedMovementFlushesTheWholePendingDeltaImmediately() {
+        touch(1000, MotionEvent.ACTION_DOWN, 100, 200);
+        touch(1040, MotionEvent.ACTION_MOVE, 150, 200);
+        touch(1140, MotionEvent.ACTION_MOVE, 151, 200);
+        touch(1150, MotionEvent.ACTION_MOVE, 180, 200);
+        assertEquals(880, sdk.mouseX);
+        waitMs(60);
+        assertEquals("The pending delta must not be applied twice", 880, sdk.mouseX);
+        touch(1220, MotionEvent.ACTION_UP, 180, 200);
+    }
+
+    @Test public void heldButtonsAndPointerLockDoNotWaitForProtection() {
+        for (boolean relative : new boolean[]{false, true}) {
+            surface.resetTouchState();
+            surface.setRelativeMouseMode(relative);
+            surface.setExternalButtonHeld(!relative);
+            touch(1000, MotionEvent.ACTION_DOWN, 100, 200);
+            touch(1040, MotionEvent.ACTION_MOVE, 150, 200);
+            touch(1140, MotionEvent.ACTION_MOVE, 151, 200);
+            assertEquals(relative, sdk.motionRelative);
+            assertEquals(relative ? 1 : 851, sdk.motionX);
+            touch(1150, MotionEvent.ACTION_UP, 151, 200);
+        }
+    }
+
+    @Test public void cancelledOrResetGesturesCannotSendDelayedMotion() {
+        for (int action = 0; action < 3; action++) {
+            surface.setRelativeMouseMode(false);
+            surface.resetTouchState();
+            touch(1000, MotionEvent.ACTION_DOWN, 100, 200);
+            touch(1040, MotionEvent.ACTION_MOVE, 150, 200);
+            touch(1140, MotionEvent.ACTION_MOVE, 151, 200);
+            if (action == 0) touch(1141, MotionEvent.ACTION_CANCEL, 151, 200);
+            else if (action == 1) surface.resetTouchState();
+            else surface.setRelativeMouseMode(true);
+            int x = sdk.motionX, y = sdk.motionY;
+            boolean relative = sdk.motionRelative;
+            waitMs(60);
+            assertEquals(x, sdk.motionX);
+            assertEquals(y, sdk.motionY);
+            assertEquals(relative, sdk.motionRelative);
+        }
+    }
+
+    @Test public void disablingTheSavedPreferenceRestoresImmediateResponse() {
+        Settings settings = new Settings(controller.get());
+        assertTrue(settings.liftOffProtection());
+        settings.liftOffProtection(false);
+        settings.mouseSensitivity(1);
+        callInstanceMethod(controller.get(), "applySettingsToSurface");
+        assertFalse(new Settings(controller.get()).liftOffProtection());
+        touch(1000, MotionEvent.ACTION_DOWN, 100, 200);
+        touch(1040, MotionEvent.ACTION_MOVE, 150, 200);
+        touch(1140, MotionEvent.ACTION_MOVE, 151, 200);
+        assertEquals(851, sdk.mouseX);
+        touch(1141, MotionEvent.ACTION_UP, 151, 200);
+    }
+
+    private static void waitMs(long ms) {
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ms));
+    }
+
     @Test @Config(qualifiers = "xhdpi")
     public void secondTapStaysHeldWhileDraggingWithPlatformTimingAndDistance() {
         float slop = ViewConfiguration.get(surface.getContext()).getScaledDoubleTapSlop();

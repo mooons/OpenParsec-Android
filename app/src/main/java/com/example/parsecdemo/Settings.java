@@ -43,6 +43,9 @@ public final class Settings {
     public float mouseSensitivity() { return sp.getFloat("mouseSensitivity", 1.6f); }
     public void mouseSensitivity(float v) { sp.edit().putFloat("mouseSensitivity", v).apply(); }
 
+    public boolean liftOffProtection() { return sp.getBoolean("liftOffProtection", true); }
+    public void liftOffProtection(boolean v) { sp.edit().putBoolean("liftOffProtection", v).apply(); }
+
     /** Multiplier applied to wheel ticks emitted by the two-finger / middle-button
      *  scroll paths. Default 4 puts the slider in the comfortable middle of
      *  the 1–10 range; users can scale up or down from there. */

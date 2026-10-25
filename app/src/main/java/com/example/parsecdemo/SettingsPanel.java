@@ -102,6 +102,10 @@ public final class SettingsPanel {
         addDivider(a, interact);
         interact.addView(rowSlider(a, "Mouse Sensitivity", s.mouseSensitivity(), 0.1f, 4f, 0.1f, s::mouseSensitivity));
         addDivider(a, interact);
+        interact.addView(rowToggle(a, "Lift-off Protection", s.liftOffProtection(), s::liftOffProtection));
+        interact.addView(rowNote(a, "Touchpad: stabilizes small movements after a pause. "
+                + "Tiny adjustments may wait up to 40 ms; turn off for immediate response."));
+        addDivider(a, interact);
         interact.addView(rowSlider(a, "Scroll Sensitivity", s.scrollSensitivity(), 1f, 10f, 1f, s::scrollSensitivity));
         addDivider(a, interact);
         interact.addView(rowToggle(a, "Reverse Scrolling", s.reverseScroll(), s::reverseScroll));

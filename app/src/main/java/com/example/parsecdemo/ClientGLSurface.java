@@ -80,6 +80,15 @@ public class ClientGLSurface extends GLSurfaceView {
     private boolean tapMoved;
     private Runnable trackpadPendingLongPress;
     private boolean trackpadLongPressFired;
+    private boolean liftOffProtection = true;
+    private boolean liftGuardArmed, liftMotionPending;
+    private long lastTouchMotionTime;
+    private float liftGuardOriginX, liftGuardOriginY, liftPendingX, liftPendingY;
+    private final float liftGuardRadius;
+    // Captured release tails started after a pause and ended within 36 ms.
+    // shortcut: tiny final corrections can be dropped; revisit if a reliable device lift signal exists.
+    private static final long LIFT_QUIET_MS = 80, LIFT_HOLD_MS = 40;
+    private final Runnable commitLiftMotion = this::flushLiftMotion;
 
     // ----- Multi-touch scroll state (used in both direct & trackpad modes) -----
     /** Engaged when a second finger touches down during a gesture. While true,
@@ -152,6 +161,7 @@ public class ClientGLSurface extends GLSurfaceView {
         ViewConfiguration config = ViewConfiguration.get(context);
         tapSlop = config.getScaledTouchSlop();
         doubleTapSlop = config.getScaledDoubleTapSlop();
+        liftGuardRadius = 6f * getResources().getDisplayMetrics().density;
         scaleDetector = new ScaleGestureDetector(context,
                 new ScaleGestureDetector.SimpleOnScaleGestureListener() {
                     @Override public boolean onScaleBegin(ScaleGestureDetector d) {
@@ -271,6 +281,11 @@ public class ClientGLSurface extends GLSurfaceView {
 
     public void setSensitivity(float v) { this.sensitivity = Math.max(0.1f, v); }
 
+    public void setLiftOffProtection(boolean enabled) {
+        if (liftOffProtection != enabled) cancelLiftMotion();
+        liftOffProtection = enabled;
+    }
+
     /** Setter for the scroll-sensitivity multiplier. Lower bound at 0.1f to
      *  avoid swallowing scroll entirely; upper bound is enforced by the UI
      *  slider in {@code SettingsPanel}. */
@@ -297,6 +312,7 @@ public class ClientGLSurface extends GLSurfaceView {
 
     @Override public void onPause() {
         touchActive = false;
+        cancelLiftMotion();
         cancelTrackpadLongPress();
         cancelDirectPendingClick();
         if (tapTapHoldDragActive || directLeftHeld) sendButton(false);
@@ -345,14 +361,20 @@ public class ClientGLSurface extends GLSurfaceView {
      *  an external mouse button and drag with another finger. */
     public void setExternalButtonHeld(boolean held) {
         this.externalButtonHeld = held;
-        if (held) cancelTrackpadLongPress();
+        if (held) {
+            cancelTrackpadLongPress();
+            cancelLiftMotion();
+        }
     }
 
     /** When true, vertical drags on the trackpad are translated to wheel ticks. */
     public void setScrollMode(boolean on) {
         this.scrollMode = on;
         this.scrollAccum = 0f;
-        if (on) cancelTrackpadLongPress();
+        if (on) {
+            cancelTrackpadLongPress();
+            cancelLiftMotion();
+        }
     }
 
     /** Emit a wheel event with the user's scroll-sensitivity multiplier
@@ -384,6 +406,7 @@ public class ClientGLSurface extends GLSurfaceView {
      *  EGL surface size. Passing root dimensions here would race with that and
      *  could leave the host renderer with the wrong viewport (off-center). */
     public void onClientResize(int width, int height) {
+        cancelLiftMotion();
         // Only update bookkeeping if it isn't already matching the GL side.
         if (surfaceWidth != width || surfaceHeight != height) {
             surfaceWidth = width;
@@ -401,6 +424,7 @@ public class ClientGLSurface extends GLSurfaceView {
      *  host side, clears scroll accumulation, and re-centers the cursor. */
     public void resetTouchState() {
         touchActive = false;
+        cancelLiftMotion();
         cancelTrackpadLongPress();
         trackpadLongPressFired = false;
         cancelDirectPendingClick();
@@ -538,6 +562,32 @@ public class ClientGLSurface extends GLSurfaceView {
         }
     }
 
+    private void cancelLiftMotion() {
+        removeCallbacks(commitLiftMotion);
+        liftMotionPending = liftGuardArmed = false;
+        liftPendingX = liftPendingY = 0;
+    }
+
+    private void flushLiftMotion() {
+        removeCallbacks(commitLiftMotion);
+        liftMotionPending = false;
+        float dx = liftPendingX, dy = liftPendingY;
+        liftPendingX = liftPendingY = 0;
+        if (touchActive && parsecAlive && (dx != 0 || dy != 0)) moveTrackpadCursor(dx, dy);
+    }
+
+    private void moveTrackpadCursor(float dx, float dy) {
+        cursorX = clamp(cursorX + dx * sensitivity, 0, surfaceWidth - 1);
+        cursorY = clamp(cursorY + dy * sensitivity, 0, surfaceHeight - 1);
+        if (relativeMouseMode) {
+            sendRelativeMotion(dx, dy);
+            notifyCursor(false);
+        } else {
+            followCursor();
+            sendAbsoluteMotionMapped(cursorX, cursorY);
+        }
+    }
+
     private float panLastCx = 0f, panLastCy = 0f;
 
     /** Send a relative (pointer-lock) motion delta to the host. */
@@ -567,6 +617,7 @@ public class ClientGLSurface extends GLSurfaceView {
      *  activity's IO pump from Parsec.clientGetCursorRelative(). */
     private volatile boolean relativeMouseMode = false;
     public void setRelativeMouseMode(boolean on) {
+        if (relativeMouseMode != on) cancelLiftMotion();
         relativeMouseMode = on;
         if (on && isAttachedToWindow() && hasWindowFocus()) requestPointerCapture();
         else if (!on && hasPointerCapture()) releasePointerCapture();
@@ -792,6 +843,8 @@ public class ClientGLSurface extends GLSurfaceView {
         int pointers = ev.getPointerCount();
         switch (action) {
             case MotionEvent.ACTION_DOWN: {
+                cancelLiftMotion();
+                lastTouchMotionTime = ev.getEventTime();
                 cancelTrackpadLongPress();
                 trackpadLongPressFired = false;
                 twoFingerScroll = false;
@@ -834,6 +887,7 @@ public class ClientGLSurface extends GLSurfaceView {
                 return true;
             }
             case MotionEvent.ACTION_POINTER_DOWN: {
+                cancelLiftMotion();
                 cancelTrackpadLongPress();
                 // Second finger → two-finger scroll. If a tap-tap-hold drag was
                 // in progress, release the left button so we don't drag-select.
@@ -863,6 +917,14 @@ public class ClientGLSurface extends GLSurfaceView {
                 }
                 float dx = ev.getX() - lastX;
                 float dy = ev.getY() - lastY;
+                if (liftOffProtection && !relativeMouseMode && !scrollMode
+                        && !externalButtonHeld && !tapTapHoldDragActive
+                        && !liftGuardArmed && ev.getEventTime() - lastTouchMotionTime >= LIFT_QUIET_MS) {
+                    liftGuardArmed = true;
+                    liftGuardOriginX = lastX;
+                    liftGuardOriginY = lastY;
+                }
+                if (dx != 0 || dy != 0) lastTouchMotionTime = ev.getEventTime();
                 if (Math.hypot(ev.getX() - downX, ev.getY() - downY) > tapSlop) {
                     tapMoved = true;
                     cancelTrackpadLongPress();
@@ -879,14 +941,18 @@ public class ClientGLSurface extends GLSurfaceView {
                         sendWheel(0, scaledTick(ticks));
                     }
                 } else {
-                    cursorX = clamp(cursorX + dx * sensitivity, 0, surfaceWidth - 1);
-                    cursorY = clamp(cursorY + dy * sensitivity, 0, surfaceHeight - 1);
-                    if (relativeMouseMode) {
-                        sendRelativeMotion(dx, dy);
-                        notifyCursor(false);
+                    if (liftGuardArmed) {
+                        liftPendingX += dx;
+                        liftPendingY += dy;
+                        if (Math.hypot(lastX - liftGuardOriginX, lastY - liftGuardOriginY) > liftGuardRadius) {
+                            flushLiftMotion();
+                            liftGuardArmed = false;
+                        } else if (!liftMotionPending && (dx != 0 || dy != 0)) {
+                            liftMotionPending = true;
+                            postDelayed(commitLiftMotion, LIFT_HOLD_MS);
+                        }
                     } else {
-                        followCursor();
-                        sendAbsoluteMotionMapped(cursorX, cursorY);
+                        moveTrackpadCursor(dx, dy);
                     }
                 }
                 return true;
@@ -904,6 +970,7 @@ public class ClientGLSurface extends GLSurfaceView {
                 return true;
             }
             case MotionEvent.ACTION_UP: {
+                cancelLiftMotion();
                 cancelTrackpadLongPress();
                 if (twoFingerScroll) {
                     if (!trackpadLongPressFired) maybeFireTwoFingerTap(ev);
@@ -934,6 +1001,7 @@ public class ClientGLSurface extends GLSurfaceView {
                 return true;
             }
             case MotionEvent.ACTION_CANCEL:
+                cancelLiftMotion();
                 cancelTrackpadLongPress();
                 trackpadLongPressFired = false;
                 if (twoFingerScroll) twoFingerScroll = false;

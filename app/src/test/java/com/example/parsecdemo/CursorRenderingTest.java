@@ -230,6 +230,7 @@ public class CursorRenderingTest {
         boolean relative;
         boolean motionRelative;
         int mouseX, mouseY;
+        int motionX, motionY;
         java.util.List<Integer> buttons = new java.util.ArrayList<>();
 
         @Implementation protected static void __staticInitializer__() {}
@@ -242,6 +243,8 @@ public class CursorRenderingTest {
         @Implementation protected boolean clientGetCursorRelative() { return relative; }
         @Implementation protected int clientSendMouseMotion(boolean relative, int x, int y) {
             motionRelative = relative;
+            motionX = x;
+            motionY = y;
             if (!relative) { mouseX = x; mouseY = y; }
             return 0;
         }
