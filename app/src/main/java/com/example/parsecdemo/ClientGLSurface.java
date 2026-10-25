@@ -4,8 +4,6 @@ import android.content.Context;
 import android.opengl.GLSurfaceView;
 import android.view.InputDevice;
 import android.view.Choreographer;
-import android.view.VelocityTracker;
-import android.widget.OverScroller;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 
@@ -66,10 +64,7 @@ public class ClientGLSurface extends GLSurfaceView {
     private boolean rendering;
     private volatile boolean renderPaused;
     private final Choreographer.FrameCallback frameTick = this::renderTick;
-    private VelocityTracker velocity;
     private boolean touchActive;
-    private final OverScroller cursorScroller;
-    private boolean multipleFingers;
     private int zoomGesture;
     private float pinchSpan;
     private float cursorX = 0f;
@@ -152,7 +147,6 @@ public class ClientGLSurface extends GLSurfaceView {
 
     public ClientGLSurface(Context context) {
         super(context);
-        cursorScroller = new OverScroller(context);
         scaleDetector = new ScaleGestureDetector(context,
                 new ScaleGestureDetector.SimpleOnScaleGestureListener() {
                     @Override public boolean onScaleBegin(ScaleGestureDetector d) {
@@ -392,9 +386,7 @@ public class ClientGLSurface extends GLSurfaceView {
      *  host side, clears scroll accumulation, and re-centers the cursor. */
     public void resetTouchState() {
         touchActive = false;
-        cursorScroller.abortAnimation();
         cancelDirectPendingClick();
-        if (velocity != null) { velocity.recycle(); velocity = null; }
         mouseScrollX = mouseScrollY = 0;
         lastMouseButtons = 0;
         pinching = panning = false;
@@ -489,14 +481,8 @@ public class ClientGLSurface extends GLSurfaceView {
         if (action == MotionEvent.ACTION_DOWN) touchActive = true;
         else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) touchActive = false;
         if (action == MotionEvent.ACTION_DOWN) {
-            cursorScroller.abortAnimation();
-            multipleFingers = false;
             zoomGesture = 0;
-            if (velocity != null) velocity.recycle();
-            velocity = VelocityTracker.obtain();
         }
-        if (velocity != null) velocity.addMovement(ev);
-        if (ev.getPointerCount() > 1) multipleFingers = true;
         if (zoomEnabled && !relativeMouseMode) {
             if (action == MotionEvent.ACTION_POINTER_DOWN && ev.getPointerCount() == 2)
                 pinchSpan = distance(ev);
@@ -516,39 +502,15 @@ public class ClientGLSurface extends GLSurfaceView {
                 if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
                     pinching = false;
                     zoomGesture = 0;
-                    if (velocity != null) { velocity.recycle(); velocity = null; }
                 }
                 return true;
             }
         }
-        boolean fling = action == MotionEvent.ACTION_UP && trackpadMode && !relativeMouseMode
-                && !multipleFingers && !tapTapHoldDragActive && !externalButtonHeld
-                && Math.hypot(ev.getX() - downX, ev.getY() - downY) > TAP_SLOP_PX;
-        boolean handled = relativeMouseMode || trackpadMode ? onTrackpadEvent(ev) : onDirectTouchEvent(ev);
-        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-            if (fling && velocity != null) {
-                velocity.computeCurrentVelocity(1000);
-                cursorScroller.fling((int) cursorX, (int) cursorY,
-                        (int) (velocity.getXVelocity() * sensitivity), (int) (velocity.getYVelocity() * sensitivity),
-                        0, Math.max(0, surfaceWidth - 1), 0, Math.max(0, surfaceHeight - 1));
-                postOnAnimation(this::stepCursorMomentum);
-            }
-            if (velocity != null) { velocity.recycle(); velocity = null; }
-        }
-        return handled;
+        return relativeMouseMode || trackpadMode ? onTrackpadEvent(ev) : onDirectTouchEvent(ev);
     }
 
     private float distance(MotionEvent event) {
         return (float) Math.hypot(event.getX(0) - event.getX(1), event.getY(0) - event.getY(1));
-    }
-
-    private void stepCursorMomentum() {
-        if (!parsecAlive || !cursorScroller.computeScrollOffset()) return;
-        cursorX = cursorScroller.getCurrX();
-        cursorY = cursorScroller.getCurrY();
-        followCursor();
-        sendAbsoluteMotionMapped(cursorX, cursorY);
-        postOnAnimation(this::stepCursorMomentum);
     }
 
     private void followCursor() {
@@ -589,7 +551,6 @@ public class ClientGLSurface extends GLSurfaceView {
     private volatile boolean relativeMouseMode = false;
     public void setRelativeMouseMode(boolean on) {
         relativeMouseMode = on;
-        cursorScroller.abortAnimation();
         if (on && isAttachedToWindow() && hasWindowFocus()) requestPointerCapture();
         else if (!on && hasPointerCapture()) releasePointerCapture();
         notifyCursor(!on);
@@ -606,7 +567,7 @@ public class ClientGLSurface extends GLSurfaceView {
         return super.onCapturedPointerEvent(event);
     }
     public boolean isRelativeMouseMode() { return relativeMouseMode; }
-    public boolean isCursorLocallyControlled() { return touchActive || !cursorScroller.isFinished(); }
+    public boolean isCursorLocallyControlled() { return touchActive; }
 
     @Override
     public boolean onGenericMotionEvent(MotionEvent ev) {
