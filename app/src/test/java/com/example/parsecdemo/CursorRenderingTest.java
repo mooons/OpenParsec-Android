@@ -172,12 +172,65 @@ public class CursorRenderingTest {
         }
     }
 
+    @Test public void twoFingerRightClickKeepsTouchpadPositionAndHonorsDirectPlacement() {
+        Intent intent = new Intent()
+                .putExtra(LoginActivity.EXTRA_SESSION_ID, "test-session")
+                .putExtra(HostListActivity.EXTRA_PEER_ID, "test-peer");
+        try (var controller = Robolectric.buildActivity(ParsecActivity.class, intent).setup()) {
+            ParsecActivity activity = controller.get();
+            ClientGLSurface surface = getField(activity, "surface");
+            ShadowParsec sdk = org.robolectric.shadow.api.Shadow.extract((Parsec) getField(activity, "parsec"));
+            surface.onClientResize(1600, 1000);
+            String[] placements = {Settings.RIGHTCLICK_FIRST, Settings.RIGHTCLICK_MIDDLE, Settings.RIGHTCLICK_SECOND};
+            for (boolean trackpad : new boolean[] {true, false}) {
+                for (int i = 0; i < placements.length; i++) {
+                    surface.setTrackpadMode(true);
+                    surface.setTrackpadMode(trackpad);
+                    surface.setRightClickPosition(placements[i]);
+                    sdk.buttons.clear();
+                    touch(surface, 1000, MotionEvent.ACTION_DOWN, 100, 120);
+                    touch(surface, 1010, MotionEvent.ACTION_MOVE, 104, 122);
+                    touch(surface, 1020, MotionEvent.ACTION_POINTER_DOWN | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT), 104, 122, 200, 160);
+                    touch(surface, 1060, MotionEvent.ACTION_POINTER_UP | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT), 104, 122, 200, 160);
+                    touch(surface, 1070, MotionEvent.ACTION_MOVE, 105, 123);
+                    touch(surface, 1080, MotionEvent.ACTION_UP, 105, 123);
+                    shadowOf(Looper.getMainLooper()).idle();
+                    assertEquals(java.util.List.of(3, -3), sdk.buttons);
+                    assertEquals("right-click x: " + trackpad + "/" + placements[i],
+                            trackpad ? 800 : new int[] {104, 152, 200}[i], sdk.mouseX);
+                    assertEquals("right-click y: " + trackpad + "/" + placements[i],
+                            trackpad ? 500 : new int[] {122, 141, 160}[i], sdk.mouseY);
+                }
+            }
+        }
+    }
+
+    private static void touch(ClientGLSurface surface, long time, int action, float... xy) {
+        int count = xy.length / 2;
+        MotionEvent.PointerProperties[] properties = new MotionEvent.PointerProperties[count];
+        MotionEvent.PointerCoords[] coords = new MotionEvent.PointerCoords[count];
+        for (int i = 0; i < count; i++) {
+            properties[i] = new MotionEvent.PointerProperties();
+            properties[i].id = i;
+            properties[i].toolType = MotionEvent.TOOL_TYPE_FINGER;
+            coords[i] = new MotionEvent.PointerCoords();
+            coords[i].x = xy[2*i];
+            coords[i].y = xy[2*i+1];
+        }
+        MotionEvent event = MotionEvent.obtain(1000, time, action, count, properties, coords,
+                0, 0, 1, 1, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0);
+        surface.onTouchEvent(event);
+        event.recycle();
+    }
+
     @Implements(value = Parsec.class, isInAndroidSdk = false, callThroughByDefault = false)
     public static class ShadowParsec {
         int[] cursor;
         byte[] png;
         boolean relative;
         boolean motionRelative;
+        int mouseX, mouseY;
+        java.util.List<Integer> buttons = new java.util.ArrayList<>();
 
         @Implementation protected static void __staticInitializer__() {}
         @Implementation protected int[] clientPollCursor() {
@@ -189,6 +242,11 @@ public class CursorRenderingTest {
         @Implementation protected boolean clientGetCursorRelative() { return relative; }
         @Implementation protected int clientSendMouseMotion(boolean relative, int x, int y) {
             motionRelative = relative;
+            if (!relative) { mouseX = x; mouseY = y; }
+            return 0;
+        }
+        @Implementation protected int clientSendMouseButton(int button, boolean pressed) {
+            buttons.add(pressed ? button : -button);
             return 0;
         }
         @Implementation protected int clientPollRumble() { return -1; }

@@ -91,7 +91,7 @@ public final class SettingsPanel {
                 new String[]{Settings.CURSOR_TOUCHPAD, Settings.CURSOR_DIRECT},
                 s.cursorMode(), s::cursorMode));
         addDivider(a, interact);
-        interact.addView(rowPicker(a, "Right Click Position",
+        interact.addView(rowPicker(a, "Right Click Position (Direct)",
                 new String[]{"First Finger", "Middle", "Second Finger"},
                 new String[]{Settings.RIGHTCLICK_FIRST, Settings.RIGHTCLICK_MIDDLE, Settings.RIGHTCLICK_SECOND},
                 s.rightClickPosition(), s::rightClickPosition));

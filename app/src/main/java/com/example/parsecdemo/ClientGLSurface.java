@@ -984,7 +984,7 @@ public class ClientGLSurface extends GLSurfaceView {
         float totalDx = Math.abs(twoFingerLastCentroidX - twoFingerDownCentroidX);
         float totalDy = Math.abs(twoFingerLastCentroidY - twoFingerDownCentroidY);
         if (totalDx + totalDy > TWO_FINGER_TAP_SLOP_PX) return;
-        if (!relativeMouseMode) {
+        if (!trackpadMode && !relativeMouseMode) {
             float x = Settings.RIGHTCLICK_SECOND.equals(rightClickPosition) ? secondFingerX
                     : Settings.RIGHTCLICK_MIDDLE.equals(rightClickPosition) ? (firstFingerX + secondFingerX) / 2 : firstFingerX;
             float y = Settings.RIGHTCLICK_SECOND.equals(rightClickPosition) ? secondFingerY
