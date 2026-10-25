@@ -90,6 +90,8 @@ public final class SettingsPanel {
                 new String[]{"Touchpad", "Direct"},
                 new String[]{Settings.CURSOR_TOUCHPAD, Settings.CURSOR_DIRECT},
                 s.cursorMode(), s::cursorMode));
+        interact.addView(rowNote(a, "Touchpad: tap to click; double-tap, hold and move to drag. "
+                + "Two-finger tap or long-press to right-click; two-finger swipe to scroll."));
         addDivider(a, interact);
         interact.addView(rowPicker(a, "Right Click Position (Direct)",
                 new String[]{"First Finger", "Middle", "Second Finger"},

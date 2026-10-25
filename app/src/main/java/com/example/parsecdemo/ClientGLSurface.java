@@ -78,6 +78,8 @@ public class ClientGLSurface extends GLSurfaceView {
     private final int tapSlop;
     private final int doubleTapSlop;
     private boolean tapMoved;
+    private Runnable trackpadPendingLongPress;
+    private boolean trackpadLongPressFired;
 
     // ----- Multi-touch scroll state (used in both direct & trackpad modes) -----
     /** Engaged when a second finger touches down during a gesture. While true,
@@ -295,6 +297,11 @@ public class ClientGLSurface extends GLSurfaceView {
 
     @Override public void onPause() {
         touchActive = false;
+        cancelTrackpadLongPress();
+        cancelDirectPendingClick();
+        if (tapTapHoldDragActive || directLeftHeld) sendButton(false);
+        tapTapHoldDragActive = directLeftHeld = false;
+        lastTapUpMs = 0;
         if (renderPaused) return;
         renderPaused = true;
         rendering = false;
@@ -336,12 +343,16 @@ public class ClientGLSurface extends GLSurfaceView {
 
     /** When true, suppress the auto-tap-to-click behaviour so the user can hold
      *  an external mouse button and drag with another finger. */
-    public void setExternalButtonHeld(boolean held) { this.externalButtonHeld = held; }
+    public void setExternalButtonHeld(boolean held) {
+        this.externalButtonHeld = held;
+        if (held) cancelTrackpadLongPress();
+    }
 
     /** When true, vertical drags on the trackpad are translated to wheel ticks. */
     public void setScrollMode(boolean on) {
         this.scrollMode = on;
         this.scrollAccum = 0f;
+        if (on) cancelTrackpadLongPress();
     }
 
     /** Emit a wheel event with the user's scroll-sensitivity multiplier
@@ -390,6 +401,8 @@ public class ClientGLSurface extends GLSurfaceView {
      *  host side, clears scroll accumulation, and re-centers the cursor. */
     public void resetTouchState() {
         touchActive = false;
+        cancelTrackpadLongPress();
+        trackpadLongPressFired = false;
         cancelDirectPendingClick();
         mouseScrollX = mouseScrollY = 0;
         lastMouseButtons = 0;
@@ -767,11 +780,21 @@ public class ClientGLSurface extends GLSurfaceView {
         }
     }
 
+    private void cancelTrackpadLongPress() {
+        if (trackpadPendingLongPress != null) {
+            removeCallbacks(trackpadPendingLongPress);
+            trackpadPendingLongPress = null;
+        }
+    }
+
     private boolean onTrackpadEvent(MotionEvent ev) {
         int action = ev.getActionMasked();
         int pointers = ev.getPointerCount();
         switch (action) {
             case MotionEvent.ACTION_DOWN: {
+                cancelTrackpadLongPress();
+                trackpadLongPressFired = false;
+                twoFingerScroll = false;
                 lastX = ev.getX();
                 lastY = ev.getY();
                 downX = lastX;
@@ -798,9 +821,20 @@ public class ClientGLSurface extends GLSurfaceView {
                 // Consume the trigger either way so a slow third tap doesn't
                 // re-engage drag.
                 lastTapUpMs = 0L;
+                if (trackpadMode && !tapTapHoldDragActive && !externalButtonHeld && !scrollMode) {
+                    trackpadPendingLongPress = () -> {
+                        trackpadPendingLongPress = null;
+                        if (!touchActive || tapMoved || twoFingerScroll || tapTapHoldDragActive
+                                || externalButtonHeld || scrollMode) return;
+                        trackpadLongPressFired = true;
+                        sendRightClick();
+                    };
+                    postDelayed(trackpadPendingLongPress, ViewConfiguration.getLongPressTimeout());
+                }
                 return true;
             }
             case MotionEvent.ACTION_POINTER_DOWN: {
+                cancelTrackpadLongPress();
                 // Second finger → two-finger scroll. If a tap-tap-hold drag was
                 // in progress, release the left button so we don't drag-select.
                 if (tapTapHoldDragActive) {
@@ -829,7 +863,10 @@ public class ClientGLSurface extends GLSurfaceView {
                 }
                 float dx = ev.getX() - lastX;
                 float dy = ev.getY() - lastY;
-                if (Math.hypot(ev.getX() - downX, ev.getY() - downY) > tapSlop) tapMoved = true;
+                if (Math.hypot(ev.getX() - downX, ev.getY() - downY) > tapSlop) {
+                    tapMoved = true;
+                    cancelTrackpadLongPress();
+                }
                 lastX = ev.getX();
                 lastY = ev.getY();
                 if (scrollMode) {
@@ -867,11 +904,13 @@ public class ClientGLSurface extends GLSurfaceView {
                 return true;
             }
             case MotionEvent.ACTION_UP: {
+                cancelTrackpadLongPress();
                 if (twoFingerScroll) {
-                    maybeFireTwoFingerTap(ev);
+                    if (!trackpadLongPressFired) maybeFireTwoFingerTap(ev);
                     twoFingerScroll = false;
                     return true;
                 }
+                if (trackpadLongPressFired) return true;
                 if (tapTapHoldDragActive) {
                     sendButton(false);
                     tapTapHoldDragActive = false;
@@ -895,6 +934,8 @@ public class ClientGLSurface extends GLSurfaceView {
                 return true;
             }
             case MotionEvent.ACTION_CANCEL:
+                cancelTrackpadLongPress();
+                trackpadLongPressFired = false;
                 if (twoFingerScroll) twoFingerScroll = false;
                 if (tapTapHoldDragActive) {
                     sendButton(false);
@@ -958,6 +999,10 @@ public class ClientGLSurface extends GLSurfaceView {
                     : Settings.RIGHTCLICK_MIDDLE.equals(rightClickPosition) ? (firstFingerY + secondFingerY) / 2 : firstFingerY;
             sendAbsoluteMotionMapped(x, y);
         }
+        sendRightClick();
+    }
+
+    private void sendRightClick() {
         synchronized (parsecLock) {
             if (parsecAlive && parsec != null) {
                 parsec.clientSendMouseButton(3 /* MOUSE_R */, true);

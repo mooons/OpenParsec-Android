@@ -90,6 +90,40 @@ public class TouchpadGesturesTest {
         assertTrue("A completed cursor stroke must not click", sdk.buttons.isEmpty());
     }
 
+    @Test public void stationaryLongPressRightClicksWithoutALeftClickOnLift() {
+        touch(1000, MotionEvent.ACTION_DOWN, 100, 200);
+        int x = sdk.mouseX, y = sdk.mouseY;
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ViewConfiguration.getLongPressTimeout() + 1));
+        assertEquals(List.of(3, -3), sdk.buttons);
+        touch(1600, MotionEvent.ACTION_UP, 101, 201);
+        assertEquals(List.of(3, -3), sdk.buttons);
+        assertEquals(x, sdk.mouseX);
+        assertEquals(y, sdk.mouseY);
+    }
+
+    @Test public void longPressIsCancelledByMotionMultitouchAndTapDrag() {
+        touch(1000, MotionEvent.ACTION_DOWN, 100, 200);
+        touch(1040, MotionEvent.ACTION_MOVE, 180, 200);
+        touch(1080, MotionEvent.ACTION_MOVE, 100, 200);
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600));
+        touch(1700, MotionEvent.ACTION_UP, 100, 200);
+        assertTrue(sdk.buttons.isEmpty());
+
+        touch(2000, MotionEvent.ACTION_DOWN, 100, 200);
+        touch(2010, MotionEvent.ACTION_POINTER_DOWN | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT), 100, 200, 150, 200);
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600));
+        touch(2700, MotionEvent.ACTION_CANCEL, 100, 200, 150, 200);
+        assertTrue(sdk.buttons.isEmpty());
+
+        touch(3000, MotionEvent.ACTION_DOWN, 100, 200);
+        touch(3050, MotionEvent.ACTION_UP, 100, 200);
+        touch(3150, MotionEvent.ACTION_DOWN, 100, 200);
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600));
+        assertEquals(List.of(1, -1, 1), sdk.buttons);
+        touch(3800, MotionEvent.ACTION_CANCEL, 100, 200);
+        assertEquals(List.of(1, -1, 1, -1), sdk.buttons);
+    }
+
     private void touch(long time, int action, float... xy) {
         if (action == MotionEvent.ACTION_DOWN) downTime = time;
         int count = xy.length / 2;
