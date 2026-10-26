@@ -6,7 +6,7 @@
 [![GitHub pull requests](https://img.shields.io/github/issues-pr/nomadsgalaxy/OpenParsec?style=flat-square)](https://github.com/nomadsgalaxy/OpenParsec/pulls)
 [![GitHub license](https://img.shields.io/github/license/nomadsgalaxy/OpenParsec?style=flat-square)](https://github.com/nomadsgalaxy/OpenParsec/blob/main/LICENSE)
 [![GitHub contributors](https://img.shields.io/github/contributors/nomadsgalaxy/OpenParsec?style=flat-square)](https://github.com/nomadsgalaxy/OpenParsec/graphs/contributors)
-[![Latest release](https://img.shields.io/github/v/release/nomadsgalaxy/OpenParsec?style=flat-square)](https://github.com/nomadsgalaxy/OpenParsec/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/mooons/OpenParsec-Android?style=flat-square)](https://github.com/mooons/OpenParsec-Android/releases/latest)
 
 An unofficial Android port of [hugeBlack/OpenParsec][upstream], the open-source
 Parsec remote-desktop client. Connects to a Parsec host PC with the same
@@ -28,7 +28,7 @@ For my other projects, check out [my website][website] and [my discord][discord]
 
 ## Download
 
-Grab the latest signed APK from [Releases](../../releases/latest) and side-load it.
+Grab the latest signed APK from [Releases](../../releases/latest) and side-load it on Android 9 or newer.
 You may need to enable *Install unknown apps* for your browser or file manager.
 
 The app has a built-in update checker that polls this repository's
@@ -39,8 +39,9 @@ newer tag is available. It can be skipped per-version from the prompt.
 
 - **Touchpad and direct-touch input modes** with a draggable cursor
 - **Pill-shaped on-screen mouse-button row** (L / M / R) with press-and-hold
-  semantics for click-and-drag and middle-button scroll. The row is freely
-  draggable; position persists across sessions
+  semantics for click-and-drag and middle-button scroll. Tap its mouse handle
+  to expand/collapse; drag it to dock at a screen edge. Position persists
+  across sessions and remains docked through rotation
 - **IME accessory bar** above the soft keyboard with modifier keys
   (Ctrl / Alt / ⊞ / Shift), arrows, Home/End, PgUp/PgDn, Ins/Del, Esc, Tab,
   F1–F12. Long-press modifiers to lock for chording
@@ -59,9 +60,9 @@ newer tag is available. It can be skipped per-version from the prompt.
 ## Build from source
 
 ```bash
-git clone https://github.com/nomadsgalaxy/OpenParsec.git
-cd OpenParsec
-./gradlew assembleRelease
+git clone https://github.com/mooons/OpenParsec-Android.git
+cd OpenParsec-Android
+sh ./gradlew assembleRelease
 ```
 
 The signed APK lands at `app/build/outputs/apk/release/app-release.apk`.

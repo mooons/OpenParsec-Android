@@ -36,8 +36,8 @@ public final class UpdateChecker {
 
     private static final String TAG = "UpdateChecker";
 
-    public static final String REPO_OWNER = "nomadsgalaxy";
-    public static final String REPO_NAME  = "OpenParsec";
+    public static final String REPO_OWNER = "mooons";
+    public static final String REPO_NAME  = "OpenParsec-Android";
 
     private static final String LATEST_ENDPOINT =
             "https://api.github.com/repos/" + REPO_OWNER + "/" + REPO_NAME + "/releases/latest";
